@@ -68,6 +68,7 @@ Find the row that matches what you are doing and load only those docs.
 | Timers, date/time | `timers.md` |
 | Creating a PM window, message loop, `WM_*` handling | `pm-window-messaging.md` |
 | Buttons, entry fields, containers, notebooks | `pm-controls.md` |
+| Needing a toolbar, status bar, progress bar, splitter, tooltip - a control PM does not ship | `pm-controls-thirdparty.md` |
 | Dialog templates, menus, string tables, `.RC` resources | `resources-and-dialogs.md` |
 | Standard file / font dialog (`WinFileDlg`, `FILEDLG`, `FDS_*`, `DID_*`) | `resources-and-dialogs.md` section 10 |
 | Which DLL really implements a `Win*`/`Gpi*` API; replacing or interposing on a system DLL | `module-dll.md` section "Where the PM APIs actually live" |
@@ -138,6 +139,7 @@ the LIS form follows the kernel *variant*, not the CPU count.
 - Presentation Manager and text-mode application programming:
   - `pm-window-messaging.md` - `WinRegisterClass`/`WinCreateStdWindow`, the message loop, `WM_*`
   - `pm-controls.md` - the standard control classes (`WC_BUTTON`/`WC_ENTRYFIELD`/`WC_CONTAINER`/`WC_NOTEBOOK`/...) and their messages
+  - `pm-controls-thirdparty.md` - third-party control classes (toolbar, status bar, splitter, 3D controls) surveyed by license, with each license read from the package that states it
   - `resources-and-dialogs.md` - resources (`.RC`, `DLGTEMPLATE`, menus, accelerators, strings) and dialog programming
   - `clipboard-dde.md` - the clipboard API and Dynamic Data Exchange (`WM_DDE_*`)
   - `drag-drop.md` - Direct Manipulation (drag & drop): `DRAGINFO`/`DrgDrag`/`DM_*`

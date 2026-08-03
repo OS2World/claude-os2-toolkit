@@ -26,7 +26,7 @@ routes into the reference, verifies against the headers, and writes the code. `g
 
 | Path | What |
 |---|---|
-| `os2ref/` | 42 pristine, project-agnostic OS/2 reference docs - internals, the full app API surface, and (in `klibc-runtime-glue.md`) how the kLIBC/LIBC Next POSIX compatibility layer maps Unix-style fd/`fork`/signal/`malloc`/socket semantics onto it, for porting GCC/Unix code. `os2ref/README.md` is the router. |
+| `os2ref/` | 43 pristine, project-agnostic OS/2 reference docs - internals, the full app API surface, and (in `klibc-runtime-glue.md`) how the kLIBC/LIBC Next POSIX compatibility layer maps Unix-style fd/`fork`/signal/`malloc`/socket semantics onto it, for porting GCC/Unix code. `os2ref/README.md` is the router. |
 | `tools/` | `inf2txt/` (read IBM `.INF` books as text); `lx_export` (objects/exports/imports), `lx_disasm` (disassemble at symbol/VA/`object:offset`), `lx_entry_parms` (per-ordinal parameter words), `sym2map` (`.SYM` -> addresses), `ne_profile` (16-bit NE) to inspect binaries; `kdb_*` (drive the OS/2 kernel debugger). |
 | `corpus/` | Scripts to build a **local** searchable corpus of the IBM books/redbooks/EDM2 on your own machine, plus `search.sh`, which searches it in provenance order. Ships none of that material. |
 | `recipes/` | Install / build / test / debug how-tos. |
