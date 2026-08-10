@@ -194,6 +194,39 @@ Naming every tool absolutely (`CC=/@unixroot/usr/bin/gcc.exe`, `GREP=...`, `SED=
 works and is what you will see in older notes, but it is an ever-growing list, and it does nothing
 for the `AC_PATH_PROG` searches inside macros you do not control. Prefer the two variables.
 
+**A third variable pair from older EMX-era notes, `ac_exeext`/`ac_cv_exeext`, is not needed on the
+autoconf this section targets** - measured against a minimal `AC_PROG_CC; AC_EXEEXT` `configure`
+(autoconf 2.71): with `ac_executable_extensions` already set, adding
+`export ac_exeext=.exe ac_cv_exeext=.exe` produced a byte-identical configure log
+(`checking for suffix of executables... .exe` either way) - a no-op. Exporting *only*
+`ac_exeext`/`ac_cv_exeext`, without `ac_executable_extensions`, still fails at
+`checking for gcc... no` - they answer the later "what suffix do compiled binaries get" question, not
+"where is the compiler", so they cannot substitute for the fix above.
+
+**Tested against real autoconf 2.13 too** (`autoconf213`, `netlabs-rel`) - and it changes the picture.
+2.13's own `AC_EXEEXT` (`acspecific.m4:2679`) carries **built-in EMX/OS2 detection**:
+
+```
+checking for path separator... ;
+checking for EMX/OS2 environment... yes
+checking for executable suffix... .exe
+```
+
+That appears with *only* the `/bin/sh` per-build fix (`CONFIG_SHELL`/`SHELL`) in the environment - no
+`PATH_SEPARATOR`, no `ac_executable_extensions` needed at all. Autoconf dropped that native EMX/OS2
+branch somewhere between 2.13 and 2.71, which is *why* section **b** above has to reconstruct the
+equivalent by hand for modern autoconf. So a package still built with `autoconf213` (a Mozilla-style
+holdout, per the `autoconf213`-vs-`autoconf` split netlabs itself ships) needs none of section **b**'s
+fixes - check `AC_PREREQ`/the `.spec`'s autoconf invocation before applying them blind.
+
+Dave Yeo's vars *do* measurably do something on 2.13, just not what's needed for `configure` to
+succeed: `AC_EXEEXT` wraps its probe in `AC_CACHE_VAL(ac_cv_exeext, ...)`, so presetting
+`ac_cv_exeext` skips the probe outright - `checking for executable suffix... (cached) .exe` instead of
+running it fresh (diffed, that cache line is the *only* difference). Harmless here since the fresh
+probe already works, but it would matter as a workaround if that specific probe were ever unreliable on
+a given box. Quoting them (`export ac_exeext=.exe` vs `export ac_exeext=".exe"`) made no difference
+either way - plain assignment, no embedded whitespace to protect.
+
 (Why `sed` resolves without the suffix in that table while `gcc` does not: `/usr/bin/sed` happens to
 be a **symlink** to `sed.exe`. Which tools are symlinked is packaging accident - do not rely on it.)
 
@@ -309,6 +342,88 @@ into a tree that may not have had it - which is fine for building, but means the
 has a dependency the target box may not carry. Check what the `.spec` actually requires rather than
 inheriting whatever your build machine accumulated.
 
+**e. A `libtool`-using `configure` needs the shared/static choice spelled out.** Don't rely on the
+platform default - pass it explicitly:
+
+```sh
+./configure --disable-static --enable-shared   # building a DLL
+./configure --enable-static --disable-shared   # building a static archive
+```
+
+Measured against a minimal `LT_INIT`-based `configure` (autoconf 2.71, netlabs RPM userland): both
+combinations are honoured - `checking whether to build shared libraries...`/`...static
+libraries...` flip accordingly with no other change in configure's output.
+
+**That confirms the flag, not the link.** Finishing the actual DLL link with the *generic* `libtool`
+that a plain `autoreconf` bundles (upstream `ltmain.sh`, not netlabs' patched one) hit real
+shell-compatibility bugs in this environment: under `sh.exe` (ash), `eval`-ing the generated
+`archive_cmds` drops the backslash in `$ECHO`'s `printf %s\n`, so the `.def` file loses its newlines
+(`printf %sn LIBRARY foo0 INITINSTANCE...` in an `sh -x` trace) and `emxbind` rejects it; switching
+`CONFIG_SHELL`/`SHELL` to `bash.exe` fixes that but then mangles `$SED`'s path (`C:\usr\bin/sed` ->
+`C:usrbin/sed`) instead.
+
+**Confirmed: the netlabs-packaged `libtool` avoids both.** `yum -y install autoconf automake libtool`
+on the OS/2 box itself (not the host), then `autoreconf -fvi` there instead of cross-generating on
+Linux - this pulls in netlabs' patched `libtool.m4`/`ltmain.sh`. Under `sh.exe`, the same `.def`
+generation this time produced a well-formed file first try:
+
+```
+LIBRARY foo0 INITINSTANCE TERMINSTANCE
+DESCRIPTION "foo"
+DATA MULTIPLE NONSHARED
+EXPORTS
+  "_foo"
+```
+
+- no `eval`/backslash corruption. That much matches Dave Yeo's claim about bitwiseworks' patches
+directly. **So: generate `configure` on the OS/2 box with its own `autoconf`/`libtool` when a package
+uses `LT_INIT`, not by cross-generating on the host** - this recipe's section 2 advice to generate on
+the host is still right for plain `autoconf` packages (no libtool involved), but does not carry over to
+libtool-using ones, since the fix lives in the *macros*, not just the generated shell.
+
+**A second, unrelated blocker turned up finishing the link, worth knowing about separately.** The
+netlabs libtool's `archive_cmds` link with `-Zdll -Zomf`, and `emxomfld -Zdll` shells out to an
+*external* OMF linker it does not bundle - `emxomfld` with no arguments documents this:
+
+```
+EMXOMFLD_TYPE: WLINK | VAC365 | VAC308 | LINK386   (default: VAC365, i.e. ilink.exe)
+```
+
+On this VM none of the three backends (`ilink.exe`, `wlink.exe`, `link386.exe`) exist anywhere on
+disk, and none are provided by any package in the `netlabs-rel` repo (`yum -C provides` on all three
+comes back empty) - so `-Zomf` DLL linking cannot complete on a box built only from `yum install
+gcc libtool automake autoconf`, independent of anything libtool does right or wrong. A real netlabs
+build server evidently has one of these three installed from outside the RPM repo (Open Watcom's
+`wlink` is the most plausible, non-commercial option - `EMXOMFLD_TYPE=WLINK` once it's present;
+`watcom-wlink-hll` in `netlabs-rel` provides it as `wl.exe`, so set `EMXOMFLD_LINKER=wl.exe` too).
+Check for one of the three before trusting a `-Zomf` DLL build to complete; a missing-`ilink.exe`
+failure this late (after configure, after compiling, after generating a correct `.def`) reads like a
+libtool bug and is not one.
+
+**Which IBM linker actually works, measured (2026-08) [OBS-RE].** Not every `ilink.exe` can link
+what `emxomfld` emits; generations behave differently against the same object set (a large mixed
+16/32-bit DLL, LIBC Next's own `libcn0.dll`):
+
+| linker | verdict |
+|---|---|
+| `LINK386` (OS/2 Toolkit 4.5 `link386.exe`) | rejects: `L2050 use16/use32 attribute conflict - segment: CODE16 in group: CGROUP` |
+| ilink 1.00.05 (VisualAge C++ 3.0, 1995) | same `LNK2050` rejection |
+| ilink 03.06 (IBM C/C++ 3.6.5, 1998) | links small exes; fails rc=5 on large links, and its diagnostics print as blank lines unless its message file (`CPPLLM36.MSG`) is reachable via `DPATH` - budget for flying blind |
+| ilink 5.0 (2003) | links everything tested, no setup beyond its own directory |
+
+ilink 5.0 circulates as a standalone `ilink50.zip` (~300 KB: `ilink.exe` plus `hll4pk50.dll`/
+`hll6pk50.dll`) in community archives (os2site.com's vacpp directory, among others). Unzip anywhere,
+put that directory on `BEGINLIBPATH` (or `LIBPATH`), and use `EMXOMFLD_TYPE=VAC365`
+`EMXOMFLD_LINKER=<dir>/ilink.exe`. Note `emxomfld`'s "VAC365" default expects this ilink-5
+generation, not the 3.6.5-vintage 03.06 the name suggests. `wlink` links the same inputs fine, and
+for LIBC Next the wlink- and ilink5-linked DLLs behaved identically in testing (differing LX object
+layout, same runtime behavior) - so wlink remains the right default when you have no ilink.
+
+One `emxomfld` debugging note [SRC `src/emx/src/emxomf/emxomfld.c`, observed 2026-08]: with `-t` it
+prints the response file it passed to the linker, but it reads the file back *after* the child linker
+has run and temp cleanup may have removed it - an empty `--- Response file ---` dump does not mean an
+empty response file. Do not chase that.
+
 ## 4. Load the patched DLL for one process only
 
 Never overwrite the system copy while testing. OS/2 supports per-process library paths:
@@ -338,6 +453,19 @@ private directory:
 So the omission is **intermittent by construction**: it works on a quiet box and silently stops
 working the moment anything else has that DLL open - which is precisely when you are mid-debug with
 another instance running. Set it always.
+
+**Correction (2026-08): this technique must NOT be used when the DLL under test is LIBCN0.DLL
+itself.** The advice above stands for ordinary DLLs, and recommending it for every DLL was the
+natural reading - but a second resident copy of LIBC Next breaks kLIBC `fork()` outright
+[OBS-RE]: a shell launched this way runs builtins and spawn-path (last-command) externals fine,
+then hangs forever on the first real `fork()` - even when the side-loaded file is a
+byte-identical copy of the installed `libcn0.dll`, which acquits the DLL's contents and
+convicts the second copy. The failure is silent and looks exactly like a bug in whatever patch
+you are testing; symptoms and detail in `../os2ref/klibc-runtime-glue.md` section 3.3. To test a
+rebuilt LIBC: snapshot the VM, install it as the system copy, reboot. The system copy cannot be
+overwritten or renamed while loaded (`SYS0032`), so stage the new file and copy it from the top
+of `STARTUP.CMD` - at that point only native (non-kLIBC) processes have started, and the copy
+succeeds.
 
 **Verify which copy actually loaded.** OS/2 keys loaded DLLs **by name in the shared arena**, so a
 copy already resident in another process can win over your private one and you will test the wrong
@@ -376,6 +504,39 @@ Rules that follow, both learned the hard way:
   cases are the ones worth naming, and which they are is `[unverified]` - a PM message loop or a
   thread blocked in a device call are the usual suspects. Try `kill`, then `kill -9`, and reach for
   the ring-0 tool only when both leave the process in `ps`.
+
+## 5b. Package notes: rebuilding LIBC Next itself (`libc`)
+
+Everything above applies, plus traps specific to this one package, all measured on a rebuild of
+`libc-0.1.14` from its SRPM (2026-08) [OBS-RE unless tagged otherwise]:
+
+- **Build in the spec's three phases, not one `kmk ... libs`.** The spec runs `kmk ... tools`,
+  then `kmk ... -f libonly.gmk libc-std.h`, then `kmk ... libs`, with a comment that a kmk
+  `.NOTPARALLEL` bug over the `$(_STD_WILDWILD)` deps forces the separate `libc-std.h` step
+  [SRC `libc.spec` %build]. It is not pedantry: if any `include/` header changed, a plain
+  `libs` invocation dies regenerating `libc-std.h` before the DLL links.
+- **`OPTIMIZE_FLAGS` must target i486 or later.** Plain `-march=i386` fails at link with
+  unresolved `__atomic_fetch_add_4`/`__atomic_fetch_sub_4` from `sem_*` - gcc emits libatomic
+  calls i386 cannot inline. The shipped `.pentium4` packages imply `-march=pentium4`; the
+  `rpm --eval %{optflags}` on a stock box prints the generic i386 default, which is *not* what
+  built the binaries you have installed.
+- **The full `libs` target rarely goes green end-to-end here; `libcn0.dll` links long before
+  the stragglers fail.** Observed stragglers: profile/log archive steps dying in `ar` (both the
+  `ar -M` script form and an `ar rcs @objlist` with an empty objlist), and `emxomf` conversions
+  of archives the earlier failure never produced. Check for `out/opt/omf/libcn0.dll` with a
+  fresh timestamp instead of trusting the exit code - and per section 5, never filter the log.
+- **Programs calling newly added exports need `libc_alias.lib` and `libc_dll.lib` as explicit
+  link inputs**, in that order. Public names are aliases: the DLL exports `__std_<name>` and
+  `libc_alias.lib` maps `<name>` to it, so linking against the import lib alone leaves the
+  plain name unresolved.
+- **Do not run builds while a strict/log-flavor LIBC is the system copy.** The strict build's
+  asserts fire on latent bugs in ordinary tooling (observed: `__spawnve.c` assertion in a shell
+  pipeline), killing builds mid-flight - and the log flavor writes per-process logs to
+  `%UNIXROOT%\var\log\app` at hundreds of MB per hour of activity, which on a small system
+  volume ends in `Disk full` failures that read as silent `kmk` exits. Deploy strict/log
+  flavors only for a short diagnostic window, then swap back and clean the log directory.
+- Testing the result: see the section 4 correction - never side-load a rebuilt LIBC; install
+  it as the system copy on a snapshot.
 
 ## 6. Upstreaming the fix
 

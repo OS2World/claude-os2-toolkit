@@ -308,6 +308,25 @@ quoted above is **[unverified]** against this pass, but the mechanics fully expl
 - fd inheritance goes through the explicit inherit-bundle mechanism in section 2.5, not implicit
   handle duplication - this is *by design*, not a missing feature, because OS/2 handles
   don't carry the same "inherited on fork" semantics a Unix kernel enforces for free.
+- **`fork()` breaks when LIBCN0.DLL itself is side-loaded as a second copy via
+  `LIBPATHSTRICT=T` + `BEGINLIBPATH`** [OBS-RE, 2026-08, LIBC Next 0.1.14 on Warp 4.52].
+  Measured with a byte-identical copy of the installed `libcn0.dll` placed in a private
+  directory and a shell launched under `SET LIBPATHSTRICT=T` + `SET BEGINLIBPATH=<that dir>`:
+  `bash -c "id; id"` hangs on the first fork - and the same binary works when the DLL
+  resolves to the system copy (with or without `LIBPATHSTRICT=T` set). So the trigger is the
+  *second resident copy of LIBC*, not the DLL's contents and not `LIBPATHSTRICT` alone.
+  Symptom cluster, from per-process strict-build logs of a hung run: the parent stops making
+  libc calls before ever reaching `waitpid` (its wait thread still receives the child-death
+  notification and queues SIGCHLD); the fork child arrives missing native handles that were
+  `FD_CLOEXEC`/`O_NOINHERIT` in the parent (`fhForkChild1`'s strict check trips on
+  `DosQueryFHState` = `ERROR_INVALID_HANDLE`); and the first grandchild's early stdout is
+  truncated to its tail. The child *does* inherit the `BEGINLIBPATH`/`LIBPATHSTRICT` state
+  and loads the same private copy, so this is not a mixed-copy parent/child split; the
+  failing step is inside the fork handshake itself (specific mechanism **[unverified]** -
+  private per-process loads plausibly break an address-identity assumption, but that reading
+  has not been confirmed against the code). Practical rule: never test a rebuilt LIBC by
+  side-loading it; install it as the system copy (on a snapshot) and reboot. Side-loading
+  other DLLs this way remains fine.
 
 ### 3.4 `exec*()`/`spawn*()` -> `__spawnve()`
 

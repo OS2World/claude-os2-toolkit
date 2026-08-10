@@ -344,6 +344,23 @@ Without one, a single runaway child pegs a core, and on a VM that starves everyt
 sessions start dropping and builds fail in ways that look like network or toolchain faults. **If the
 guest suddenly turns flaky, look for a spinning process before debugging anything else.**
 
+Two `DosKillProcess` details that bite test harnesses:
+
+- **`action` 0 is `DKP_PROCESSTREE`** - it terminates the target *and every descendant*
+  (`DKP_PROCESS` = 1 kills only the named process) [DOC-IBM - bsedos.h; see
+  `../os2ref/process-thread.md`]. A harness whose cleanup does `DosKillProcess(0, child)` will
+  therefore kill the child's whole subtree on every exit path - which **masks
+  signal-delivery tests**: "did my `^C` kill the grandchildren?" passes vacuously because
+  cleanup killed them regardless [OBS-RE: a strict-libc trace showed the grandchildren dying
+  of the cleanup's SIGTERM while the signal under test had never been sent at all]. Verify
+  the observable *before* cleanup runs - park the harness at a checkpoint after the action
+  and inspect `ps` there, not after it exits.
+- kLIBC delivers an incoming `DosKillProcess` as **SIGTERM** on the receiving side
+  (`XCPT_SIGNAL`/`XCPT_SIGNAL_KILLPROC` -> `SIGTERM`; mapping table in
+  `../os2ref/klibc-runtime-glue.md` section 4.2, confirmed in a live trace [OBS-RE]) - so in a
+  strict/log-flavor libc trace a cooperative kill shows up as `iSignalNo=15`, useful for
+  telling "my test's signal" from "the harness's cleanup" after the fact.
+
 ### A running `.EXE` is locked - rebinding resources fails
 
 OS/2 holds an executable open while it runs, so re-binding resources into a live program fails:
