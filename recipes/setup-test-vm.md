@@ -126,6 +126,28 @@ arrows, PgUp/PgDn - take an `E0` prefix. These go to the VM directly and do not 
 focused. Pair each input with a screenshot: that is how an inverted axis, a swapped colour channel,
 or a dialog that ignores the keyboard become obvious rather than mysterious.
 
+**Typing a character outside ASCII on a US-layout guest** goes through Alt plus the decimal code
+on the numeric keypad, sent as scancodes: Alt down `38`, then each keypad digit as a make/break
+pair, then Alt up `b8`. The keypad makes are `52` (0), `4f` (1), `50` (2), `51` (3), `4b` (4),
+`4c` (5), `4d` (6), `47` (7), `48` (8), `49` (9); each break is the make plus `0x80`.
+
+```sh
+VBoxManage controlvm "<vm>" keyboardputscancode 38 4f cf 50 d0 49 c9 b8   # Alt+129: u-umlaut in CP437
+```
+
+- **Generate scancode sequences from a table and check the output against a known string first.**
+  A wrong scancode does not fail - it types a different character, and the test then reports on
+  input you never meant to send.
+- **Judge text input by the bytes that were stored, not by the screen.** Save the document and
+  hexdump it: a glyph on screen does not say which encoding holds it. This is how a typed accented
+  letter stored as a lone invalid byte, and as a *different* character after an 8-bit save, was
+  found (`os2ref/pm-window-messaging.md`, keyboard message).
+- **When comparing screenshots across builds pixel by pixel, leave out the caret's column.** The
+  caret blinks; one differing column exactly as tall as the caret is the blink, not a regression.
+
+[OBS-RE - keypad codes 1, 2 and 9 and the Alt make/break used as shown; the others are the standard
+set-1 keypad makes, not individually exercised.]
+
 ### The mouse is much harder than the keyboard [OBS-RE]
 
 **`VBoxManage controlvm` has no mouse command.** Keyboard and screenshots are first-class -
