@@ -27,9 +27,10 @@ routes into the reference, verifies against the headers, and writes the code.
 | `os2-toolkit:os2-dev` | The map of the kit and the disciplines; loaded for any OS/2 task. |
 | `os2-toolkit:setup` | Wire a project up, or migrate one that used a copied kit. |
 | `os2-toolkit:contribute` | Write a finding back into your checkout, provenance-tagged and de-identified. |
+| `os2-toolkit:ingest` | File OS/2 material you mention (a downloaded PDF, a folder of books, an SDK) into your local OS/2 library - see [`PATHS.md`](PATHS.md). |
 
 The tools land on your `PATH` (`lx_export.py`, `lx_disasm.py`, `inf2txt.sh`, `kdb_cmd.py`,
-`os2-corpus-search` ...). Two plugin options, set at install or later with `/plugin`: `os2docs` (your
+`os2-corpus-search`, `os2-lib` ...). Two plugin options, set at install or later with `/plugin`: `os2docs` (your
 local book corpus, default `~/os2docs`) and `toolkit_checkout` (the clone contributions go to,
 default `~/claude-os2-toolkit`).
 
