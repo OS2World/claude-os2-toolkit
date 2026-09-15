@@ -30,16 +30,15 @@ unidentified file - that is how secrets get printed.
   anything `file` calls a private key), password databases (`master.passwd`, `spwd.db`, `pwd.db`,
   `shadow`), licence/registration keys (`*.key`, `*reg.key`), token files. Report only the path and
   the reason; exclude them from the plan. Never open one to check.
-- **Restricted material** (employer, customer, NDA - a company's copyright or licence in a readme):
-  stop and ask whether to file it at all. If yes, it gets `--licence restricted`.
 - **Project material** (a project's own source, build output, logs, plans, test VMs) is not library
   material. Say so and leave it.
 
 ## 2. Identify
 
-What is it, who published it, which edition or version, what licence class (`ibm`, `third-party`,
-`own`, `private`, `restricted`, `unknown` - PATHS.md section 8). Read a README, a title page, a
-version banner - the minimum. If you cannot establish something, record `unknown`; do not guess.
+What is it, who published it, which edition or version. Record `--provenance ibm` for IBM's own
+material, `community` for third-party books and sites, `own` for the user's work - it only orders
+search results; leave it `unknown` if unclear. Read a README, a title page, a version banner - the
+minimum. If you cannot establish something, record `unknown`; do not guess.
 
 ## 3. Is it already in the library?
 
@@ -69,13 +68,13 @@ own item or reported as diverged - ask.
 - **VM images:** `media`, `link` only, never moved (section 9); fill in `vm:` by hand.
 
 **For a directory of many things, stop here and show the user a plan** - a table of proposed items
-(category/slug, mode, licence, provides), copies found, exclusions (secrets, project, restricted) and
+(category/slug, mode, provides), copies found, exclusions (secrets, project material) and
 questions - and file nothing until they agree.
 
 ## 5. File it
 
 ```sh
-os2-lib new <category> <slug> --title "<Title>" --kind <kind> --licence <class> \
+os2-lib new <category> <slug> --title "<Title>" --kind <kind> [--provenance ibm|community|own] \
     --mode <mode> --original <path> --provides <role,role> [--canonical archive|tree|file] \
     [--part headers=original/H --part libs=original/LIB ...] \
     [--part-of <slug>] [--derived-from <slug|unknown>]

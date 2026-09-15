@@ -28,19 +28,23 @@ STATE = "state"
 KINDS = {"book", "book-set", "article-set", "sdk", "headers", "source-tree", "samples",
          "binaries", "decompile", "dump", "notes", "disc-image", "system-tree",
          "vm-image", "toolchain"}
-LICENCES = {"own", "ibm", "third-party", "private", "restricted", "unknown"}
+PROVENANCE = {"ibm", "community", "own", "unknown"}
+# Legacy ITEM.md field, read as provenance: library material is never part of the
+# toolkit, so a licence class had nothing to govern.
+LEGACY_LICENCE = {"ibm": "ibm", "third-party": "community", "own": "own", "private": "own",
+                  "restricted": "unknown", "unknown": "unknown"}
 MODES = {"link", "convert", "import", "adopt"}
 CANONICAL = {"archive", "tree", "file"}
-REQUIRED = ["title", "category", "kind", "provides", "licence", "mode"]
+REQUIRED = ["title", "category", "kind", "provides", "mode"]
 SLUG_RE = re.compile(r"^[a-z0-9]+(?:[.-][a-z0-9]+)*$")
 SEARCH = {"text", "original", "both"}
-KEY_ORDER = ["title", "category", "kind", "provides", "licence", "mode", "canonical",
+KEY_ORDER = ["title", "category", "kind", "provides", "provenance", "mode", "canonical",
              "original", "acquired", "part_of", "derived_from", "converter", "search",
              "regenerable", "paths", "copies", "vm"]
 
-# Search order: IBM's word first, then third-party, then the user's own, then
-# anything of unknown standing; notes after all published material.
-LICENCE_RANK = {"ibm": 0, "third-party": 1, "own": 2, "private": 2, "unknown": 3, "restricted": 4}
+# Search order: IBM's word first, then community material, then the user's own,
+# then anything of unknown standing; notes after all published material.
+PROVENANCE_RANK = {"ibm": 0, "community": 1, "own": 2, "unknown": 3}
 # Kinds whose content is not text; grep skips them unless a role names them.
 OPAQUE_KINDS = {"binaries", "disc-image", "vm-image", "dump", "system-tree", "toolchain"}
 TEXT_GLOBS = ["*.txt", "*.md", "*.h", "*.hpp", "*.inc", "*.c", "*.cpp", "*.asm", "*.def",
@@ -250,6 +254,13 @@ class Item:
         return default if v is None else v
 
     @property
+    def provenance(self):
+        v = self.get("provenance")
+        if v is None and self.get("licence") is not None:
+            v = LEGACY_LICENCE.get(self.get("licence"), "unknown")
+        return v or "unknown"
+
+    @property
     def provides(self):
         v = self.get("provides", [])
         return v if isinstance(v, list) else [v]
@@ -347,7 +358,7 @@ def cmd_ls(a):
             continue
         flag = "" if it.available() else "  [original missing]"
         rows.append((it.category + "/" + it.slug, it.get("kind", "?"), it.get("mode", "?"),
-                     it.get("licence", "?"), ",".join(map(str, it.provides)) + flag))
+                     it.provenance, ",".join(map(str, it.provides)) + flag))
     if not rows:
         print("(no items%s in %s)" % (" providing " + a.role if a.role else "", library_root()),
               file=sys.stderr)
@@ -467,11 +478,9 @@ def cmd_grep(a):
     items = [it for it in iter_items(category=a.category) if not it.error]
     if a.role:
         items = [it for it in items if a.role in it.provides]
-    elif not a.include_restricted:
-        items = [it for it in items if it.get("licence") != "restricted"]
     if not a.role:
         items = [it for it in items if it.get("kind") not in OPAQUE_KINDS]
-    items.sort(key=lambda it: (it.category == "notes", LICENCE_RANK.get(it.get("licence"), 3), it.slug))
+    items.sort(key=lambda it: (it.category == "notes", PROVENANCE_RANK.get(it.provenance, 3), it.slug))
     base = ["grep", "-rna", "--color=never"]
     if not a.case:
         base.append("-i")
@@ -505,7 +514,7 @@ def cmd_grep(a):
             lines += _grep_path(base, path, a.pattern, filtered)
         if lines:
             total += len(lines)
-            _print_group("%s/%s  (%s, %s)" % (it.category, it.slug, it.get("licence"), it.get("kind")),
+            _print_group("%s/%s  (%s, %s)" % (it.category, it.slug, it.provenance, it.get("kind")),
                          lines, it.dir + "/", a.max)
         else:
             silent.append(it.slug)
@@ -526,7 +535,7 @@ def cmd_new(a):
     if not SLUG_RE.match(a.slug):
         raise LibError("slug '%s' must be lowercase publisher-title[-edition], "
                        "letters/digits separated by - or ." % a.slug)
-    for field, allowed in (("kind", KINDS), ("licence", LICENCES), ("mode", MODES)):
+    for field, allowed in (("kind", KINDS), ("provenance", PROVENANCE), ("mode", MODES)):
         if getattr(a, field) not in allowed:
             raise LibError("%s must be one of: %s" % (field, ", ".join(sorted(allowed))))
     if a.search and a.search not in SEARCH:
@@ -567,7 +576,7 @@ def cmd_new(a):
     meta = {
         "title": a.title, "category": a.category, "kind": a.kind,
         "provides": [p for p in (a.provides or "").split(",") if p],
-        "licence": a.licence, "mode": a.mode,
+        "provenance": a.provenance, "mode": a.mode,
         "canonical": a.canonical or ("tree" if original and os.path.isdir(original) else "file"),
         "original": original or ("unknown" if a.mode == "adopt" else a.original),
         "acquired": time.strftime("%Y-%m-%d"),
@@ -695,7 +704,7 @@ def check_items(root):
             p(where, "search '%s' is not one of %s" % (it.get("search"), ", ".join(sorted(SEARCH))))
         if it.get("category") and it.get("category") != it.category:
             p(where, "category field says '%s' but the item is filed under %s/" % (it.get("category"), it.category))
-        for field, allowed in (("kind", KINDS), ("licence", LICENCES), ("mode", MODES)):
+        for field, allowed in (("kind", KINDS), ("provenance", PROVENANCE), ("mode", MODES)):
             v = it.get(field)
             if v and v not in allowed:
                 p(where, "%s '%s' is not one of %s" % (field, v, ", ".join(sorted(allowed))))
@@ -709,7 +718,7 @@ def check_items(root):
         textdir = os.path.join(it.dir, "text")
         if it.get("mode") in ("convert", "adopt") and not (os.path.isdir(textdir) and os.listdir(textdir)):
             p(where, "mode %s but text/ is empty (unconverted)" % it.get("mode"))
-        for k in ("original", "derived_from", "licence", "converter"):
+        for k in ("original", "derived_from", "converter"):
             if it.get(k) == "unknown":
                 p(where, "provenance gap: %s is unknown" % k)
         for part, sub in (it.get("paths", {}) or {}).items():
@@ -736,13 +745,13 @@ def cmd_check(a):
 
 
 def write_catalog(root):
-    rows = ["slug\tcategory\tkind\tmode\tlicence\tcanonical\tprovides\tpart_of\tcopies\toriginal"]
+    rows = ["slug\tcategory\tkind\tmode\tprovenance\tcanonical\tprovides\tpart_of\tcopies\toriginal"]
     for it in iter_items(root):
         if it.error:
             continue
         o = it.original()
         rows.append("\t".join(str(x) for x in (
-            it.slug, it.category, it.get("kind", ""), it.get("mode", ""), it.get("licence", ""),
+            it.slug, it.category, it.get("kind", ""), it.get("mode", ""), it.provenance,
             it.get("canonical", ""), ",".join(map(str, it.provides)), it.get("part_of", ""),
             len(it.get("copies", []) or []), os.path.realpath(o) if o else it.get("original", ""))))
     tmp = os.path.join(root, ".CATALOG.tsv.tmp")
@@ -777,7 +786,7 @@ def main(argv=None):
     s.set_defaults(fn=cmd_path)
     s = sp.add_parser("grep", help="search the library's text in provenance order")
     s.add_argument("pattern"); s.add_argument("category", nargs="?", choices=CATEGORIES)
-    s.add_argument("--role"); s.add_argument("--include-restricted", action="store_true")
+    s.add_argument("--role")
     s.add_argument("--max", type=int, default=int(os.environ.get("SEARCH_MAX", "40")))
     for flag in "wFE":
         s.add_argument("-" + flag, action="store_true")
@@ -789,7 +798,8 @@ def main(argv=None):
     s = sp.add_parser("new", help="create an item (used by the ingest skill)")
     s.add_argument("category"); s.add_argument("slug")
     s.add_argument("--title", required=True); s.add_argument("--kind", required=True)
-    s.add_argument("--licence", required=True); s.add_argument("--mode", required=True)
+    s.add_argument("--provenance", default="unknown", help="ibm | community | own | unknown: search order only")
+    s.add_argument("--mode", required=True)
     s.add_argument("--original"); s.add_argument("--provides"); s.add_argument("--canonical")
     s.add_argument("--part-of"); s.add_argument("--derived-from")
     s.add_argument("--search", help="text | original | both (default both): what grep reads")

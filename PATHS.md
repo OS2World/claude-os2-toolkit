@@ -28,9 +28,8 @@ The user just tells Claude, with the plugin installed:
 
 Claude runs the `os2-toolkit:ingest` skill, which for each thing:
 
-1. **Screens it** (section 8): secrets are refused outright; restricted material is filed only on
-   the user's explicit say-so.
-2. **Identifies** it - what it is, who published it, which edition, its licence class.
+1. **Screens it** (section 8): secrets are refused outright.
+2. **Identifies** it - what it is, who published it, which edition.
 3. **Checks the catalogue for the same material** (section 7). If it is already an item, the new
    location is recorded as a *copy* of that item, not filed again.
 4. **Chooses a canonical form and a mode** (section 4).
@@ -132,7 +131,7 @@ kind: sdk                      # book | book-set | article-set | sdk | headers |
                                # binaries | decompile | dump | notes | disc-image | system-tree |
                                # vm-image | toolchain
 provides: [toolkit-headers, toolkit-import-libs, toolkit-books, samples]
-licence: ibm                   # own | ibm | third-party | private | restricted | unknown (section 8)
+provenance: ibm                # ibm | community | own | unknown - search order only (optional)
 mode: link                     # link | convert | import | adopt
 canonical: archive             # archive | tree | file
 original: "/where/the/canonical/form/is"    # or a URL; "unknown" allowed (adopt)
@@ -169,23 +168,26 @@ vm: null                       # vm-image items only (section 9)
 | `install-media`, `system-tree`, `vm-template` | disc images, installed OS/2 drive trees, VM images |
 | `toolchain-openwatcom`, `toolchain-visualage`, `toolchain-gcc`, `ghidra` | tools |
 
+**Provenance** orders search results - IBM's own material first, then community material (EDM2,
+third-party books), then the user's own, then unknown - so a hit is graded before it is read. It is
+optional and never reported as a problem.
+
 **Unknown is an honest answer.** Material often outlives its provenance: text converted years ago
-from books no longer on disk, a PDF of unclear authorship. `original: unknown`,
-`derived_from: unknown`, `licence: unknown` are valid and are reported by `os2-lib check` as
-*provenance gaps*, never guessed. Anything cited from such an item carries that uncertainty.
+from books no longer on disk. `original: unknown`, `derived_from: unknown` and `converter: unknown`
+are valid and are reported by `os2-lib check` as *provenance gaps* (the text cannot be regenerated),
+never guessed.
 
 ## 6. Finding things: `os2-lib`
 
 ```sh
 os2-lib root                        # print $OS2_LIBRARY
-os2-lib ls [CATEGORY] [--role R]    # list items: slug, kind, mode, licence, provides
+os2-lib ls [CATEGORY] [--role R]    # list items: slug, kind, mode, provenance, provides
 os2-lib role R [PART]               # path of the item(s) providing R (PART from its paths:)
                                     #   exit 1 and "no item provides R" if none - never an empty success
 os2-lib path SLUG [SUBPATH]         # an item's path
 os2-lib grep PATTERN [--role R | CATEGORY]
                                     # search text/, tree/ and linked text in provenance order
-                                    #   (IBM, then third-party, then notes); restricted items excluded
-                                    #   unless --include-restricted
+                                    #   (this kit's os2ref/, IBM, community, own, notes)
 os2-lib dupes [PATH...]             # copies: known ones from ITEM.md, plus a scan of PATHs for material
                                     #   matching existing items; reports GB reclaimable
 os2-lib check                       # missing originals, missing ITEM.md, stale CATALOG.tsv, unconverted
@@ -229,7 +231,7 @@ Common shapes the dry run found, and their resolution:
 | Reference material committed into a project's version control | the library item | copy with `note: committed into <project>` - see section 11 |
 | Whole stale checkouts of a project | not library material | reported under `dupes` only for the library material they contain |
 
-## 8. Screening: secrets and restricted material
+## 8. Screening: secrets
 
 **Secrets are refused.** `ingest` never files, converts, prints or quotes: private keys (`-----BEGIN
 ... PRIVATE KEY-----`, `ssh_host_*_key`, `id_*` without `.pub`), password databases (`master.passwd`,
@@ -238,19 +240,10 @@ Common shapes the dry run found, and their resolution:
 **never by displaying content** - and reports only the path and the reason. A directory containing
 secrets is still ingestible; the secret files are listed under `excluded:` in the plan and skipped.
 
-**Licence classes** travel with the item and are enforced downstream:
-
-| Class | Meaning | Contributions | Search |
-|---|---|---|---|
-| `own` | the user's own work | free | yes |
-| `third-party` | published by someone else under a licence | facts + short attributed quotation | yes |
-| `ibm` | IBM material | facts + short attributed quotation | yes |
-| `private` | personal copies not meant to leave the machine (VM images, backups) | facts only, no quotation | yes |
-| `restricted` | employer, customer or NDA material | **never** | only with `--include-restricted` |
-| `unknown` | licence not established | treated as `restricted` for contributions | yes |
-
-Restricted material is filed only when the user explicitly asks for it, and nothing under `re/` or
-any `restricted`/`unknown` item is ever copied into a contribution.
+**Library material is never part of the toolkit.** It stays on the user's machine and is never
+published, so the library records no licence. Anything a session writes back into the toolkit follows
+`CONTRIBUTING.md` whatever its source: facts in your own words, short attributed quotation at most,
+provenance-tagged, de-identified.
 
 ## 9. VM images
 
@@ -261,7 +254,7 @@ VM's snapshot may be the parent of another VM's differencing disk). So:
 ```yaml
 kind: vm-image
 provides: [vm-template]
-licence: private
+provenance: own
 mode: link
 vm:
   hypervisor: virtualbox        # virtualbox | qemu | vmware | other
@@ -313,5 +306,5 @@ whether to remove it from the repository is the project owner's decision, made o
    (`C:\OS2\DLL`, `/@unixroot/usr/lib`) are platform facts and are fine.
 2. **No role, no guessing.** If `os2-lib role` finds nothing, Claude says which material is missing
    and asks whether the user has it - it does not search the disk on its own.
-3. **The library is machine-local and never published.** It holds licensed material and machine
-   paths; only the toolkit's tools and this spec are public.
+3. **The library is machine-local and never published.** It holds other people's material and
+   machine paths; only the toolkit's tools and this spec are public.

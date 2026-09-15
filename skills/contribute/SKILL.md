@@ -16,7 +16,7 @@ The toolkit source is the user's git checkout of claude-os2-toolkit. Find it in 
 3. otherwise ask the user where their clone is, and offer to file it so this is automatic next time:
    ```sh
    os2-lib new source claude-os2-toolkit-checkout --title "claude-os2-toolkit (my checkout)" \
-       --kind source-tree --licence own --mode link --original <path> --provides os2-toolkit-source
+       --kind source-tree --provenance own --mode link --original <path> --provides os2-toolkit-source
    ```
 
 Confirm it before touching anything:
