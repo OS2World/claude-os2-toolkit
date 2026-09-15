@@ -1190,5 +1190,9 @@ position, `BKA_TEXT` (`0x0400`) / `BKA_BITMAP` (`0x0800`) tab-data kind.
   / `WinCreateStdWindow`, `WinRegisterClass`, the core `WM_*` set, the message loop, the packing
   macros (`SHORT1FROMMP`/`SHORT2FROMMP`/`MPFROM2SHORT`), dialogs, and the `FCF_*`/`FID_*` frame
   controls.
+- `pm-controls-thirdparty.md` - the controls PM does *not* ship (toolbar, status bar, progress bar,
+  splitter, 3D group box), surveyed across the Hobbes archive by license, with every license read
+  from the package that states it. Read the present doc first: much of what a third-party widget is
+  reached for can be had from `WC_CONTAINER`, `WC_VALUESET` or an owner-drawn `WC_BUTTON`.
 - `pm-graphics.md` - the Gpi drawing path an owner-drawn control (`WM_DRAWITEM`, `BN_PAINT`) uses.
 - `calling-convention.md` - the `APIENTRY`/`EXPENTRY` linkage every window/dialog procedure uses.

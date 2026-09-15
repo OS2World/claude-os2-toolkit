@@ -131,7 +131,7 @@ commenting load-bearing weirdness - see **`c-guide.md`**.
 ## The build loop
 
 1. **Route.** Task -> `os2ref/README.md` -> load the 1-3 relevant docs (e.g. a dialog: `pm-controls.md`
-   + `resources-and-dialogs.md`; a folder subclass: `wps-classes.md` + `som.md`). Don't load all 42.
+   + `resources-and-dialogs.md`; a folder subclass: `wps-classes.md` + `som.md`). Don't load all 43.
 2. **Write** in IBM-canonical names. Enable the right include switches (`#define INCL_WIN`,
    `INCL_GPI`, `INCL_DOSFILEMGR`, `INCL_WINWORKPLACE`, ...) - `os2ref/` and the headers name them.
 3. **Verify** each nontrivial prototype/constant against the Toolkit header if present
