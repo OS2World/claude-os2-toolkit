@@ -42,7 +42,7 @@ installed copy - updates overwrite it.
   `os2-corpus-search <pattern>`. **Check early whether a corpus exists** (`ls "${OS2DOCS:-${user_config.os2docs}}"` /
   `os2-corpus-search` reports which sources are present): the books carry the usage patterns,
   contracts and worked examples that `os2ref/` summarizes but cannot replace, and a session with
-  them answers materially better than one without. `search.sh` also defends against the failure
+  them answers materially better than one without. `os2-corpus-search` also defends against the failure
   mode where an encoding or wrong-volume miss reads as "IBM never documented this".
 - **`recipes/`** - how-tos for install/build/test/debug. **`sources.md`** - where to download the
   IBM material and toolchain this kit does not ship.
@@ -52,7 +52,7 @@ installed copy - updates overwrite it.
   in your own words and never paste copyrighted prose, tag every claim with its provenance and
   source, strip machine paths and project identifiers, and run the commands you document. Its last
   section is a step-by-step for exactly that request.
-- **`os2-app-dev-guide.md`** - the disciplines + build loop (short version in Step 3). And
+- **`os2-app-dev-guide.md`** - the disciplines + build loop (short version below). And
   **`c-guide.md`** - the deeper craft of *writing* correct OS/2 C (ABI-struct asserts, wire formats,
   memory ownership, honest failure); point the user's `CLAUDE.md` at it for any nontrivial C.
 
@@ -83,7 +83,7 @@ These are the disciplines low-level OS/2 work rewards; each one was paid for the
   check before you say it. Two reflexes to distrust especially: assuming **OS/2 is maximally alien**
   (Presentation Manager is a Win32 *cousin* - `WinRegisterClass`/`WinCreateWindow`/`WinGetMsg`/
   `WinDefWindowProc`, `WM_*` window procs, native `WC_*` controls; grep `os2ref/pm-window-messaging.md`
-  before claiming no analogue exists), and answering a strategy question before doing Step 1.5.
+  before claiming no analogue exists), and answering a strategy question before inventorying the machine (the `setup` skill's Step 1).
 - **Provenance:** the corpus tags every claim `[DOC-IBM]` (IBM header/book), `[OBS-RE]` (observed by
   reverse-engineering), `[DOC]` (community/secondary, e.g. EDM2), `[SRC]` (read from the source of a
   component that runs on OS/2 but is not OS/2 - e.g. kLIBC). Preserve that distinction when you
