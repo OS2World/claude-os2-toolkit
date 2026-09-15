@@ -63,7 +63,8 @@ PATH.
   `kdb_*.py` only for driver/low-level work with a debug VM).
 - **Build + test:** the recipe by name (e.g. "the toolkit's `recipes/build-pm-app.md`") plus the
   project's own target VM details.
-- **Corpus:** if their book corpus is not at `${user_config.os2docs}`, record where it is.
+- **Corpus:** if their book corpus is not at `${user_config.os2docs}` (or, when that is an unset
+  placeholder, `~/os2docs`), record where it is.
 - **Contributing:** "Findings that belong in the toolkit go through `os2-toolkit:contribute`."
 
 ## Migrating a project that used a copied kit
@@ -72,7 +73,7 @@ If the project's `CLAUDE.md` (or `LOOP.md`, `STATUS.md` ...) refers to `claude-o
 paths - a clone inside the project, a sibling checkout, or `~/claude-os2-toolkit/...`:
 
 1. **Look for stranded work first.** For each referenced copy that is a git checkout, compare it with
-   the toolkit source at `${user_config.toolkit_checkout}`: `git status`, and
+   the toolkit source at `${user_config.toolkit_checkout}` (unset placeholder: `~/claude-os2-toolkit`): `git status`, and
    `git log --oneline <source-head>..HEAD` after fetching one into the other. Report any commits or
    uncommitted edits the source lacks and offer `os2-toolkit:contribute` to bring them in. Do not
    discard them.

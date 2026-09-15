@@ -14,8 +14,9 @@ priors.
 `os2-app-dev-guide.md`, `sources.md`, `CONTRIBUTING.md`) is under the plugin root:
 `${CLAUDE_PLUGIN_ROOT}`. Read them from there. The tools are on your PATH by name
 (`lx_export.py`, `inf2txt.sh`, `kdb_cmd.py`, `os2-corpus-search` ...). The user's IBM book corpus root is
-`${user_config.os2docs}` (the `OS2DOCS` environment variable overrides it; export it for
-`os2-corpus-search` if it differs from `~/os2docs`).
+`${user_config.os2docs}` - if that reads as a literal `${...}` placeholder the option is unset, so
+use `$OS2DOCS`, else `~/os2docs`. `os2-corpus-search` reads `OS2DOCS` (default `~/os2docs`); export
+it when the corpus is elsewhere.
 
 **Recording what you learn** in the toolkit is a separate, deliberate act: use the
 `os2-toolkit:contribute` skill. Never edit files under `${CLAUDE_PLUGIN_ROOT}` when it is an

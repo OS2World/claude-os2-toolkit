@@ -7,8 +7,9 @@ description: Write an OS/2 finding back into the claude-os2-toolkit source - a f
 
 ## Where the edit goes - never the installed copy
 
-The toolkit source is the user's git checkout at `${user_config.toolkit_checkout}`. Resolve it
-(expand `~`) and confirm it before touching anything:
+The toolkit source is the user's git checkout at `${user_config.toolkit_checkout}` (if that reads as
+a literal `${...}` placeholder the option is unset: try `~/claude-os2-toolkit`). Resolve it (expand
+`~`) and confirm it before touching anything:
 
 ```sh
 git -C <checkout> remote -v                                  # a claude-os2-toolkit clone
