@@ -13,19 +13,27 @@ is the map of what the kit contains, and every relative path below is under
 
 **Look before you ask, and look before you recommend.** The material this kit deliberately does not
 ship is very often already on the box - and a session that assumes it is absent will answer
-strategy questions from training instead of from IBM. Run this first; it costs one command:
+strategy questions from training instead of from IBM. Start with what the OS/2 library already holds:
 
 ```sh
-# IBM books, Toolkit headers, converted book text, toolchains
-find / \( -iname "*.INF" -o -iname "bsedos.h" -o -iname "pmwin.h" -o -iname "os2tk45" \) \
-     2>/dev/null | grep -vi "wine\|node_modules" | head -20
-ls ~/os2* ~/toolkit* /opt/*os2* 2>/dev/null      # common unpack locations
+os2-lib root && os2-lib roles      # what is filed, by role
+os2-lib check                      # anything missing, unconverted or unmounted
 ```
 
-If you find IBM books (`.INF`, or `inf2txt`-converted `.txt`), **that is your verification
-substrate** - `recipes/read-ibm-books.md` for how to search them, and note the `grep -a` trap there
-(which applies to **any** OS/2-era text, including `.c`/`.h`/`.def`/`.rc` sources, not only books)
-before trusting any negative result. If you find the Toolkit `H/` directory, cite `file:line` from it.
+- **No library yet** (the root does not exist): ask where it should live, then
+  `os2-lib init <path> --save` - or `os2-lib init` for the default `os2-lib root` printed.
+- **Material missing** - no `toolkit-headers`, no `toolkit-books`: ask whether the user has it. If
+  they do not know, look, and show what you found rather than using it directly:
+  ```sh
+  find ~ /opt -maxdepth 5 \( -iname "*.INF" -o -iname "bsedos.h" -o -iname "pmwin.h" -o -iname "os2tk45" \) \
+       2>/dev/null | grep -vi "wine\|node_modules" | head -20
+  ```
+  Offer `os2-toolkit:ingest` for what turns up. Never point the project at it by path.
+
+The IBM books (`toolkit-books`, `ddk-books`) are **your verification substrate** -
+`recipes/read-ibm-books.md` for how to search them, and note the `grep -a` trap there (which applies
+to **any** OS/2-era text, including `.c`/`.h`/`.def`/`.rc` sources, not only books) before trusting
+any negative result. Cite Toolkit headers as `file:line` from `os2-lib role toolkit-headers headers`.
 
 Then read `recipes/choosing-a-toolchain.md` **before** you say anything about toolchains, and check
 the size of the relevant `os2ref/` docs (`wc -l`) before you characterize what the corpus covers.
@@ -41,14 +49,14 @@ Ask only what you need - and only what Step 1 did not already answer:
    but gives modern C99/C11, POSIX (`fork`/`pipe`/`openpty`/sockets), and RPM packages. Note where
    their toolchain is, or that they need to install it (`recipes/install-openwatcom.md`, `sources.md`).
 3. **Test target?** An ArcaOS/OS-2 VM (recommended), or build-only for now (`sources.md` section 4).
-4. **Toolkit headers?** (`sources.md` section 1) - only ask if Step 1 found none. If present, note the
-   path to `.../H`; it is the verification substrate.
+4. **Toolkit headers?** (`sources.md` section 1) - only ask if the library has no `toolkit-headers`.
+   If they have them, ingest them; they are the verification substrate.
 
 ## Step 3 - Write the project's `CLAUDE.md`
 
 Create or update `CLAUDE.md` in the **user's project root**. It is auto-loaded every session, so it
-holds pointers, not content - and **no filesystem paths into the toolkit**: the installed plugin
-moves on every update. Its stable interface is the plugin name, its skills, and the tool names on
+holds pointers, not content - and **no filesystem paths into the toolkit or to OS/2 material**: the installed plugin
+moves on every update, and OS/2 material is found by role (`os2-lib`). Its stable interface is the plugin name, its skills, and the tool names on
 PATH.
 
 - A one-line framing: *"This project builds an OS/2 `<type>`. OS/2 APIs are not in the model's
@@ -56,15 +64,15 @@ PATH.
 - **Grounding:** "At the start of any OS/2 task load the `os2-toolkit:os2-dev` skill (the
   os2-toolkit plugin). Route OS/2 API/internals questions through its `os2ref/README.md` router; do
   not answer them from memory."
-- **Verify:** headers present -> "confirm every prototype/constant/struct against the Toolkit
-  headers at `<path>/H` and cite `file:line`." Absent -> "treat `os2ref/` as authoritative and flag
-  anything it does not cover rather than inventing it."
+- **Verify:** library has `toolkit-headers` -> "confirm every prototype/constant/struct against the
+  Toolkit headers (`os2-lib role toolkit-headers headers`) and cite `file:line`." Absent -> "treat
+  `os2ref/` as authoritative and flag anything it does not cover rather than inventing it."
 - **Tools:** the ones relevant to their work, by PATH name (always `inf2txt.sh` + `lx_disasm.py`;
   `kdb_*.py` only for driver/low-level work with a debug VM).
 - **Build + test:** the recipe by name (e.g. "the toolkit's `recipes/build-pm-app.md`") plus the
   project's own target VM details.
-- **Corpus:** if their book corpus is not at `${user_config.os2docs}` (or, when that is an unset
-  placeholder, `~/os2docs`), record where it is.
+- **Material:** "OS/2 books, headers and other material are in the OS/2 library: find them with
+  `os2-lib role <role>`, search with `os2-lib grep`, never by a path."
 - **Contributing:** "Findings that belong in the toolkit go through `os2-toolkit:contribute`."
 
 ## Migrating a project that used a copied kit
@@ -73,7 +81,7 @@ If the project's `CLAUDE.md` (or `LOOP.md`, `STATUS.md` ...) refers to `claude-o
 paths - a clone inside the project, a sibling checkout, or `~/claude-os2-toolkit/...`:
 
 1. **Look for stranded work first.** For each referenced copy that is a git checkout, compare it with
-   the toolkit source at `${user_config.toolkit_checkout}` (unset placeholder: `~/claude-os2-toolkit`): `git status`, and
+   the toolkit source (located as in the `os2-toolkit:contribute` skill): `git status`, and
    `git log --oneline <source-head>..HEAD` after fetching one into the other. If
    `git merge-base` finds **no common ancestor** (an older, separately initialised history), commits
    prove nothing - compare *content* instead: for each file the copy has or has edited, check its
@@ -84,6 +92,8 @@ paths - a clone inside the project, a sibling checkout, or `~/claude-os2-toolkit
    *unverified*, not clean.
 2. **Rewrite the references** as plugin pointers: `<kit>/os2ref/X.md` -> "the toolkit's `os2ref/X.md`
    (via `os2-toolkit:os2-dev`)"; `<kit>/tools/foo.py` or `python3 ../tools/foo.py` -> `foo.py`;
-   `<kit>/corpus/search.sh` -> `os2-corpus-search`. Keep every project-specific rule untouched.
+   `<kit>/corpus/search.sh` -> `os2-lib grep`. Host paths to OS/2 material the library holds
+   (compare with the `original` column of `CATALOG.tsv` under `os2-lib root`) -> `os2-lib role <role>
+   [part]`; material it does not hold -> offer `os2-toolkit:ingest` first. Keep every project-specific rule untouched.
 3. **Do not delete the copy.** Tell the user it is no longer referenced and can be removed once step 1
    is settled. Back the `CLAUDE.md` up first if the project is not under version control.

@@ -13,6 +13,6 @@ This kit is a **Claude Code plugin** (`os2-toolkit`). Its instructions to Claude
 
 **Without the plugin** (a plain clone someone pointed you at): read `skills/setup/SKILL.md`, then
 `skills/os2-dev/SKILL.md`, and follow them, reading `${CLAUDE_PLUGIN_ROOT}` as this checkout's root
-and `${user_config.os2docs}` as `$OS2DOCS` (default `~/os2docs`). Put this checkout's `bin/` on
+and using `bin/os2-lib` for the OS/2 library (`PATHS.md`; `OS2_LIBRARY` sets where it lives). Put this checkout's `bin/` on
 `PATH` so the tools resolve by name. Write the project's `CLAUDE.md` pointers as paths into this
 checkout instead of plugin skill names.

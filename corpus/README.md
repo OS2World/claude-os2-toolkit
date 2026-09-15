@@ -1,5 +1,10 @@
 # `corpus/` - building and searching the OS/2 documentation corpus
 
+> **With the plugin installed, use the OS/2 library instead of a hand-built corpus** (`../PATHS.md`):
+> tell Claude what material you have and `os2-toolkit:ingest` files and converts it with these same
+> scripts; `os2-lib grep` searches it. The scripts below still fetch material, and `search.sh` still
+> works on its own for a corpus under `$OS2DOCS` without the plugin.
+
 `os2ref/` is distilled and verified, but it is not exhaustive. The IBM books are:
 they carry the per-function reference, the usage patterns, the contracts, and the worked examples
 that no summary preserves. Sessions that consult them get materially better answers than sessions

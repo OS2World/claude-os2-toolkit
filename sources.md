@@ -19,7 +19,8 @@ enough. Grab the **Toolkit headers** if you want Claude to *verify* prototypes a
 > **Once you have material, `corpus/` turns it into something searchable.**
 > `corpus/build-inf-text.sh` extracts `.INF` books to greppable text;
 > `corpus/fetch-books.sh` and `corpus/fetch-edm2.sh` mirror the redbook and EDM2 sources below;
-> `os2-corpus-search` then searches everything in provenance order and refuses to let an
+> `os2-toolkit:ingest` files the result into your OS/2 library (`PATHS.md`), and `os2-lib grep`
+> then searches everything in provenance order and refuses to let an
 > encoding or wrong-volume miss read as "IBM never documented this". See `corpus/README.md`.
 
 ## 0. Before downloading anything - look on the machine
@@ -33,7 +34,8 @@ find ~ -maxdepth 4 -type d \( -iname "*os2*" -o -iname "*toolkit*" -o -iname "*e
      -o -iname "inf_text" -o -iname "*developer_connection*" \) 2>/dev/null
 ```
 
-Two habits make this pay off:
+Whatever turns up, have Claude ingest it (`os2-toolkit:ingest`) rather than pointing a project at
+it by path. Two habits make this pay off:
 
 - **Grep the local mirror, not just the headers.** Prototypes live in `/usr/include`; *usage
   patterns, contracts and worked examples* live in the books, in EDM/2 articles, and in Toolkit
@@ -102,7 +104,7 @@ OS/2, not IBM's word - and corroborate anything load-bearing against the IBM boo
 
 `corpus/fetch-archive-book.sh <archive-id> <name>` fetches archive.org's own OCR (not the PDF) and
 converts it to `$OS2DOCS/pdf_text/<name>.txt` with `[[page N]]` markers carrying the book's
-**printed** page numbers, so a hit is citable as "Petzold p.144".
+**printed** page numbers, so a hit is citable as "Petzold p.144". Then ingest the result (`os2-toolkit:ingest`).
 
 - **Charles Petzold, *OS/2 Presentation Manager Programming*** (Ziff-Davis, 1994; ISBN 1562761234).
   934 pages, 18 chapters, PM-only and 32-bit - the closest thing to a PM tutorial that exists.
@@ -118,7 +120,7 @@ converts it to `$OS2DOCS/pdf_text/<name>.txt` with `[[page N]]` markers carrying
   *Caveat:* it targets OS/2 2.x with IBM C Set++, so the toolchain material (makefiles, `IBMDLL.CMD`,
   `-Ge-`) is period-specific - the PM and GPI content is not. Scanned-book text is OCR, so it is
   case-damaged and hyphenation-damaged: search fragments, case-insensitively, exactly as
-  `os2-corpus-search` does by default.
+  `os2-lib grep` does by default.
 
 ## 4. Test + debug target - for running what you build (commercial or free)
 

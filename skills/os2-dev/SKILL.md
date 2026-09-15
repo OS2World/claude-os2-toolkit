@@ -13,10 +13,14 @@ priors.
 **Where things are.** Every relative path below (`os2ref/`, `recipes/`, `c-guide.md`,
 `os2-app-dev-guide.md`, `sources.md`, `CONTRIBUTING.md`) is under the plugin root:
 `${CLAUDE_PLUGIN_ROOT}`. Read them from there. The tools are on your PATH by name
-(`lx_export.py`, `inf2txt.sh`, `kdb_cmd.py`, `os2-corpus-search` ...). The user's IBM book corpus root is
-`${user_config.os2docs}` - if that reads as a literal `${...}` placeholder the option is unset, so
-use `$OS2DOCS`, else `~/os2docs`. `os2-corpus-search` reads `OS2DOCS` (default `~/os2docs`); export
-it when the corpus is elsewhere.
+(`lx_export.py`, `inf2txt.sh`, `kdb_cmd.py`, `os2-lib` ...).
+
+**OS/2 material on this machine lives in the user's OS/2 library** (`PATHS.md`). Find it by role,
+never by path: `os2-lib roles` lists what the library holds, `os2-lib role toolkit-headers headers`
+prints where the Toolkit headers are, and `os2-lib grep PATTERN` searches this kit's `os2ref/`, then
+IBM material, third-party material and notes, in that order. If a role is missing, say which
+material is missing and ask whether the user has it - `os2-toolkit:ingest` then files it. Do not go
+looking through the disk for it on your own, and never write a path you found into a project.
 
 **Recording what you learn** in the toolkit is a separate, deliberate act: use the
 `os2-toolkit:contribute` skill. Never edit files under `${CLAUDE_PLUGIN_ROOT}` when it is an
@@ -37,13 +41,14 @@ installed copy - updates overwrite it.
   and `lx_disasm.py --sym` labels the disassembly; **never hand-roll a `.SYM` parser** (the format
   is undocumented, and a plausible-looking heuristic yields addresses that are wrong by a
   segment base).
-- **`corpus/`** - build a **local** searchable corpus of the IBM books (and the redbook / EDM2
-  mirrors) from material the user already has or fetches, then search it with
-  `os2-corpus-search <pattern>`. **Check early whether a corpus exists** (`ls "${OS2DOCS:-${user_config.os2docs}}"` /
-  `os2-corpus-search` reports which sources are present): the books carry the usage patterns,
-  contracts and worked examples that `os2ref/` summarizes but cannot replace, and a session with
-  them answers materially better than one without. `os2-corpus-search` also defends against the failure
-  mode where an encoding or wrong-volume miss reads as "IBM never documented this".
+- **The OS/2 library** - the user's IBM books, Toolkit and DDK, sources, media and RE material, filed
+  once and found by role (`PATHS.md`). **Check early what it holds** (`os2-lib roles`): the books
+  carry the usage patterns, contracts and worked examples that `os2ref/` summarizes but cannot
+  replace, and a session with them answers materially better than one without. `os2-lib grep`
+  searches case-insensitively, in provenance order, with per-source counts and a list of what it
+  could not search - the defences against an encoding, case or wrong-volume miss reading as "IBM
+  never documented this". `corpus/` holds the scripts that fetch and convert material; `ingest`
+  uses them.
 - **`recipes/`** - how-tos for install/build/test/debug. **`sources.md`** - where to download the
   IBM material and toolchain this kit does not ship.
 - **`CONTRIBUTING.md`** - read this **before you write anything back into the kit**. The user may

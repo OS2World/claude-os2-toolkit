@@ -30,9 +30,14 @@ routes into the reference, verifies against the headers, and writes the code.
 | `os2-toolkit:ingest` | File OS/2 material you mention (a downloaded PDF, a folder of books, an SDK) into your local OS/2 library - see [`PATHS.md`](PATHS.md). |
 
 The tools land on your `PATH` (`lx_export.py`, `lx_disasm.py`, `inf2txt.sh`, `kdb_cmd.py`,
-`os2-corpus-search`, `os2-lib` ...). Two plugin options, set at install or later with `/plugin`: `os2docs` (your
-local book corpus, default `~/os2docs`) and `toolkit_checkout` (the clone contributions go to,
-default `~/claude-os2-toolkit`).
+`os2-lib` ...).
+
+**Your OS/2 material** - IBM books, the Toolkit and DDK, sources, install media, RE output - goes
+into a local **OS/2 library** the plugin manages ([`PATHS.md`](PATHS.md)). Tell Claude what you have
+(*"I downloaded the Toolkit to ~/Downloads"*, *"my INF books are in ../books"*) and `ingest` files
+it; after that it is found by role (`os2-lib role toolkit-headers headers`) and searched with
+`os2-lib grep`. Nothing is tied to a path on your disk, and derived text never lands outside the
+library.
 
 **Updating:** `git -C ~/claude-os2-toolkit pull`, then
 `claude plugin marketplace update claude-os2-toolkit && claude plugin update os2-toolkit@claude-os2-toolkit`.
@@ -51,10 +56,11 @@ them. Findings go into the checkout via `os2-toolkit:contribute`.
 | `skills/` | The plugin's skills: `os2-dev` (map + disciplines), `setup`, `contribute`. |
 | `bin/` | `PATH` shims for the tools and corpus scripts. |
 | `tools/` | `inf2txt/` (read IBM `.INF` books as text); `lx_export` (objects/exports/imports), `lx_disasm` (disassemble at symbol/VA/`object:offset`), `lx_entry_parms` (per-ordinal parameter words), `sym2map` (`.SYM` -> addresses), `ne_profile` (16-bit NE) to inspect binaries; `kdb_*` (drive the OS/2 kernel debugger). |
-| `corpus/` | Scripts to build a **local** searchable corpus of the IBM books/redbooks/EDM2 on your own machine, plus `search.sh`, which searches it in provenance order. Ships none of that material. |
+| `corpus/` | Scripts to build a **local** searchable corpus of the IBM books/redbooks/EDM2 on your own machine; `ingest` uses them, and `search.sh` works without the plugin. Ships none of that material. |
 | `recipes/` | Install / build / test / debug how-tos. |
 | `scaffolds/` | Starter skeletons (a PM app, a console app). |
 | [`sources.md`](sources.md) | Where to download the toolchain and IBM material this kit points at but does not ship. |
+| [`PATHS.md`](PATHS.md) | The OS/2 library: layout, `ITEM.md`, roles, and `os2-lib`. |
 | [`START-HERE.md`](START-HERE.md) | Where Claude's instructions live, with or without the plugin. |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to add to the kit - facts not expression, provenance, de-identification, and the checklist a session runs before committing. |
 | [`os2-app-dev-guide.md`](os2-app-dev-guide.md) | The development workflow + disciplines. |

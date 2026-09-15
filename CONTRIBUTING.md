@@ -175,7 +175,7 @@ that had never been run** and counts that had drifted. Check these:
   ```sh
   grep -rnP '[^\x00-\x7F]' $(git ls-files | grep -v '^tools/inf2txt/fpGUI/')   # must print nothing
   ```
-- **Do not commit downloaded material.** `$OS2DOCS` lives outside the repo for this reason. No
+- **Do not commit downloaded material.** The OS/2 library (`PATHS.md`) lives outside the repo for this reason. No
   `.INF`, no PDFs, no book text, no header dumps.
 - **Re-read your diff for machine paths and project names** (section 4, section 5).
 

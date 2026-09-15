@@ -2,8 +2,8 @@
 
 **Status: DRAFT (rev 2).** Implemented so far: `os2-lib` (`tools/os2lib.py`: root, init, ls, roles,
 role, path, grep, new, convert, check, catalog) and the `ingest` skill. Not yet: `os2-lib dupes`,
-automated secret screening (the skill screens by hand), VM dependency checks, and the other skills
-still using `OS2DOCS` instead of roles. Rev 2 folds in a dry run against one real,
+automated secret screening (the skill screens by hand), and VM dependency checks.
+Skills find material by role. Rev 2 folds in a dry run against one real,
 heavily scattered machine (~70 items across ~40 locations, 80-100 GB of copies).
 
 OS/2 material arrives piecemeal: a PDF someone downloaded, a folder of INF books, a Toolkit CD

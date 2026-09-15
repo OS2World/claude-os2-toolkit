@@ -395,7 +395,39 @@ def _search_roots(it):
     return roots
 
 
+def _grep_path(base, path, pattern, filtered):
+    cmd = list(base)
+    if filtered and os.path.isdir(path):
+        cmd += ["--include=" + g for g in TEXT_GLOBS]
+    cmd += ["-e", pattern, path]
+    r = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+    if r.returncode > 1:
+        raise LibError("grep failed on %s: %s" % (path, r.stderr.strip()))
+    return r.stdout.splitlines()
+
+
+def _print_group(label, lines, strip, limit):
+    print("== %s  - %d match(es) ==" % (label, len(lines)))
+    for ln in lines[:limit]:
+        print("  " + ln.replace(strip, ""))
+    if len(lines) > limit:
+        print("  ... %d more (raise --max or narrow the search)" % (len(lines) - limit))
+
+
+ZERO_HINT = """A zero result is NOT proof that OS/2 lacks the facility. Before concluding that:
+  - try IBM's wording, not yours ("presentation space", not "canvas"), and the base name
+    without a prefix ("OpenDC", not "DevOpenDC");
+  - search a fragment: IBM's box-drawn tables split phrases across cells;
+  - check what the library holds (os2-lib roles) and what was NOT searched above;
+  - a facility may be a WPS/SOM method or an IOCtl rather than a Win*/Dos* call."""
+
+
 def cmd_grep(a):
+    """Search in provenance order: this kit's os2ref/, then IBM, third-party, own,
+    unknown, notes. Case-insensitive by default (scanned and typeset book text is
+    case-damaged), always -a (IBM code-page text reads as binary to grep), and
+    per-group counts plus a list of what was NOT searched, so a miss can be
+    attributed to the probe rather than to the material."""
     items = [it for it in iter_items(category=a.category) if not it.error]
     if a.role:
         items = [it for it in items if a.role in it.provides]
@@ -404,13 +436,27 @@ def cmd_grep(a):
     if not a.role:
         items = [it for it in items if it.get("kind") not in OPAQUE_KINDS]
     items.sort(key=lambda it: (it.category == "notes", LICENCE_RANK.get(it.get("licence"), 3), it.slug))
-    if not items:
-        raise LibError("nothing to search: no matching items in %s" % library_root())
     base = ["grep", "-rna", "--color=never"]
-    for flag in ("i", "w", "F", "E"):
+    if not a.case:
+        base.append("-i")
+    for flag in ("w", "F", "E"):
         if getattr(a, flag):
             base.append("-" + flag)
-    searched, unsearchable, total = 0, [], 0
+    if a.context:
+        base += ["-C", str(a.context)]
+    searched, unsearchable, silent, total = 0, [], [], 0
+    if not (a.role or a.category or a.no_os2ref):
+        ref = os.path.join(KIT, "os2ref")
+        if os.path.isdir(ref):
+            searched += 1
+            lines = _grep_path(base, ref, a.pattern, True)
+            if lines:
+                total += len(lines)
+                _print_group("os2ref  (this kit: verified, per-claim provenance tags)", lines, KIT + "/", a.max)
+            else:
+                silent.append("os2ref")
+    if not items and not searched:
+        raise LibError("nothing to search: no matching items in %s" % library_root())
     for it in items:
         roots = _search_roots(it)
         if not roots:
@@ -420,25 +466,21 @@ def cmd_grep(a):
         searched += 1
         lines = []
         for path, filtered in roots:
-            cmd = list(base)
-            if filtered and os.path.isdir(path):
-                cmd += ["--include=" + g for g in TEXT_GLOBS]
-            cmd += ["-e", a.pattern, path]
-            r = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
-            if r.returncode > 1:
-                raise LibError("grep failed on %s: %s" % (path, r.stderr.strip()))
-            lines += r.stdout.splitlines()
+            lines += _grep_path(base, path, a.pattern, filtered)
         if lines:
             total += len(lines)
-            print("== %s/%s  (%s, %s) ==" % (it.category, it.slug, it.get("licence"), it.get("kind")))
-            for ln in lines[: a.max]:
-                print("  " + ln.replace(it.dir + "/", ""))
-            if len(lines) > a.max:
-                print("  ... %d more (raise --max or narrow the search)" % (len(lines) - a.max))
+            _print_group("%s/%s  (%s, %s)" % (it.category, it.slug, it.get("licence"), it.get("kind")),
+                         lines, it.dir + "/", a.max)
+        else:
+            silent.append(it.slug)
     sys.stdout.flush()
-    print("-- %d match(es) in %d searched item(s)" % (total, searched), file=sys.stderr)
+    print("-- %d match(es) in %d searched source(s)" % (total, searched), file=sys.stderr)
+    if silent and total:
+        print("-- no matches in: " + ", ".join(silent), file=sys.stderr)
     if unsearchable:
         print("-- NOT searched: " + "; ".join(unsearchable), file=sys.stderr)
+    if not total:
+        print(ZERO_HINT, file=sys.stderr)
     return 0 if total else 1
 
 
@@ -697,8 +739,12 @@ def main(argv=None):
     s.add_argument("pattern"); s.add_argument("category", nargs="?", choices=CATEGORIES)
     s.add_argument("--role"); s.add_argument("--include-restricted", action="store_true")
     s.add_argument("--max", type=int, default=int(os.environ.get("SEARCH_MAX", "40")))
-    for flag in "iwFE":
+    for flag in "wFE":
         s.add_argument("-" + flag, action="store_true")
+    s.add_argument("-i", action="store_true", help="accepted for habit; case-insensitive is the default")
+    s.add_argument("--case", action="store_true", help="case-sensitive (off by default: book text is case-damaged)")
+    s.add_argument("-C", "--context", type=int, default=int(os.environ.get("SEARCH_CONTEXT", "0")))
+    s.add_argument("--no-os2ref", action="store_true", help="skip this kit's os2ref/")
     s.set_defaults(fn=cmd_grep)
     s = sp.add_parser("new", help="create an item (used by the ingest skill)")
     s.add_argument("category"); s.add_argument("slug")

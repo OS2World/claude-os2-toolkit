@@ -1,4 +1,6 @@
 #!/bin/sh
-# PATH shim (plugin bin/): runs corpus/search.sh from this checkout with the same arguments.
+# Deprecated alias: the plugin searches the OS/2 library (PATHS.md) with `os2-lib grep`.
+# corpus/search.sh still works on its own for a corpus under $OS2DOCS without the plugin.
+echo "os2-corpus-search: deprecated - running 'os2-lib grep'" >&2
 root=$(dirname -- "$(dirname -- "$(readlink -f -- "$0")")")
-exec "$root/corpus/search.sh" "$@"
+exec "$root/bin/os2-lib" grep "$@"

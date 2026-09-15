@@ -7,9 +7,19 @@ description: Write an OS/2 finding back into the claude-os2-toolkit source - a f
 
 ## Where the edit goes - never the installed copy
 
-The toolkit source is the user's git checkout at `${user_config.toolkit_checkout}` (if that reads as
-a literal `${...}` placeholder the option is unset: try `~/claude-os2-toolkit`). Resolve it (expand
-`~`) and confirm it before touching anything:
+The toolkit source is the user's git checkout of claude-os2-toolkit. Find it in this order:
+
+1. `os2-lib role os2-toolkit-source` - the checkout, filed in the OS/2 library;
+2. `${CLAUDE_PLUGIN_ROOT}` itself, if it is a git checkout of the toolkit (a plugin installed from a
+   local directory, or a `claude --plugin-dir` session) rather than an installed copy in the plugin
+   cache;
+3. otherwise ask the user where their clone is, and offer to file it so this is automatic next time:
+   ```sh
+   os2-lib new source claude-os2-toolkit-checkout --title "claude-os2-toolkit (my checkout)" \
+       --kind source-tree --licence own --mode link --original <path> --provides os2-toolkit-source
+   ```
+
+Confirm it before touching anything:
 
 ```sh
 git -C <checkout> remote -v                                  # a claude-os2-toolkit clone
@@ -17,10 +27,7 @@ grep '"name"' <checkout>/.claude-plugin/plugin.json          # "os2-toolkit"
 git -C <checkout> status -sb                                 # what is already uncommitted there
 ```
 
-If it is missing or is not the toolkit, **stop and ask** for the path (it is the plugin's
-`toolkit_checkout` option). The running plugin at `${CLAUDE_PLUGIN_ROOT}` is usually an installed
-copy that the next update overwrites - edit it only if it resolves to that same checkout (a
-`claude --plugin-dir` development session).
+Never edit an installed copy in the plugin cache: the next update overwrites it.
 
 ## The rules
 
