@@ -33,8 +33,9 @@ MODES = {"link", "convert", "import", "adopt"}
 CANONICAL = {"archive", "tree", "file"}
 REQUIRED = ["title", "category", "kind", "provides", "licence", "mode"]
 SLUG_RE = re.compile(r"^[a-z0-9]+(?:[.-][a-z0-9]+)*$")
+SEARCH = {"text", "original", "both"}
 KEY_ORDER = ["title", "category", "kind", "provides", "licence", "mode", "canonical",
-             "original", "acquired", "part_of", "derived_from", "converter",
+             "original", "acquired", "part_of", "derived_from", "converter", "search",
              "regenerable", "paths", "copies", "vm"]
 
 # Search order: IBM's word first, then third-party, then the user's own, then
@@ -381,17 +382,52 @@ def cmd_path(a):
     print(p)
 
 
+def _cover(path, excluded):
+    """Paths that together cover `path` minus the `excluded` subtrees (realpaths)."""
+    rp = os.path.realpath(path)
+    if rp in excluded:
+        return []
+    if not any(e.startswith(rp + os.sep) for e in excluded) or not os.path.isdir(path):
+        return [path]
+    out = []
+    for name in sorted(os.listdir(path)):
+        out += _cover(os.path.join(path, name), excluded)
+    return out
+
+
+def _part_originals(it):
+    """Realpaths of the originals of items that are part_of `it` - searched as
+    those items, so the parent must not search them again."""
+    parts = set()
+    for other in iter_items(it.root):
+        if not other.error and other.get("part_of") == it.slug:
+            o = other.original()
+            if o and os.path.exists(o):
+                parts.add(os.path.realpath(o))
+    return parts
+
+
 def _search_roots(it):
-    """(path, text_only_globs) pairs grep should read for an item."""
+    """(path, filter_to_text_globs) pairs grep should read for an item.
+
+    Derived text/ and tree/ are read whole. The original is read too, filtered to
+    text-like files, so a converted book set that also ships .htm or .txt files
+    is searched in full. ITEM.md `search: text|original|both` (default both)
+    narrows it - e.g. a mirror whose clean text duplicates its HTML."""
+    mode = it.get("search", "both")
     roots = []
-    for sub in ("text", "tree"):
-        p = os.path.join(it.dir, sub)
-        if os.path.isdir(p):
-            roots.append((p, sub == "tree"))
-    if not roots and it.get("mode") in ("link", "import"):
+    if mode in ("text", "both"):
+        for sub in ("text", "tree"):
+            p = os.path.join(it.dir, sub)
+            if os.path.isdir(p):
+                roots.append((p, sub == "tree"))
+    if mode in ("original", "both") and it.get("mode") in ("link", "convert", "import"):
         o = it.original()
         if o and os.path.exists(o):
             roots.append((o, True))
+    excluded = _part_originals(it)
+    if excluded:
+        roots = [(p, f) for root, f in roots for p in _cover(root, excluded)]
     return roots
 
 
@@ -493,6 +529,8 @@ def cmd_new(a):
     for field, allowed in (("kind", KINDS), ("licence", LICENCES), ("mode", MODES)):
         if getattr(a, field) not in allowed:
             raise LibError("%s must be one of: %s" % (field, ", ".join(sorted(allowed))))
+    if a.search and a.search not in SEARCH:
+        raise LibError("search must be one of: " + ", ".join(sorted(SEARCH)))
     if a.canonical and a.canonical not in CANONICAL:
         raise LibError("canonical must be one of: " + ", ".join(sorted(CANONICAL)))
     root = library_root()
@@ -534,7 +572,7 @@ def cmd_new(a):
         "original": original or ("unknown" if a.mode == "adopt" else a.original),
         "acquired": time.strftime("%Y-%m-%d"),
         "part_of": a.part_of, "derived_from": a.derived_from,
-        "converter": None, "regenerable": a.mode != "adopt", "paths": parts, "copies": [],
+        "converter": None, "search": a.search, "regenerable": a.mode != "adopt", "paths": parts, "copies": [],
     }
     with open(os.path.join(d, "ITEM.md"), "w", encoding="utf-8") as f:
         f.write(emit_frontmatter(meta))
@@ -653,6 +691,8 @@ def check_items(root):
         for k in REQUIRED:
             if it.meta.get(k) in (None, "", []):
                 p(where, "missing required field '%s'" % k)
+        if it.get("search") and it.get("search") not in SEARCH:
+            p(where, "search '%s' is not one of %s" % (it.get("search"), ", ".join(sorted(SEARCH))))
         if it.get("category") and it.get("category") != it.category:
             p(where, "category field says '%s' but the item is filed under %s/" % (it.get("category"), it.category))
         for field, allowed in (("kind", KINDS), ("licence", LICENCES), ("mode", MODES)):
@@ -752,6 +792,7 @@ def main(argv=None):
     s.add_argument("--licence", required=True); s.add_argument("--mode", required=True)
     s.add_argument("--original"); s.add_argument("--provides"); s.add_argument("--canonical")
     s.add_argument("--part-of"); s.add_argument("--derived-from")
+    s.add_argument("--search", help="text | original | both (default both): what grep reads")
     s.add_argument("--part", action="append", metavar="NAME=SUBPATH",
                    help="a useful part inside the item, e.g. headers=original/H (repeatable)")
     s.set_defaults(fn=cmd_new)

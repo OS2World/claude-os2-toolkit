@@ -146,7 +146,7 @@ paths:                         # where the useful parts are inside the canonical
   libs: original/LIB
 copies:                        # other locations holding the same material (section 7)
   - path: "/another/place/os2tk45"
-    match: size+names          # sha256 | size+names | name-only
+    match: size+names          # bytes | sha256 | size+names | name-only
     note: "committed into a project working copy"
 vm: null                       # vm-image items only (section 9)
 ---
@@ -207,8 +207,9 @@ grep -an DosOpen "$h/bsedos.h"
 Duplication is recorded, reported and left for the user to resolve. The toolkit **never deletes,
 moves or replaces a copy on its own.**
 
-- **Detection, cheapest first:** same name and size; same file list and sizes for a tree; `sha256`
-  only when those agree and the user wants certainty (hashing multi-GB media is slow). The `match`
+- **Detection, cheapest first:** same name and size; same file list and sizes for a tree; a
+  byte-for-byte compare (`bytes`) or `sha256` only when those agree and the user wants certainty
+  (hashing multi-GB media is slow). The `match`
   field records which test was used, so a `name-only` match is never presented as identical.
 - **A copy is not always waste.** A project may need material inside its tree; a second disk may be a
   backup. `copies[].note` says why a copy exists when known, and the user can mark one `keep: true`.
