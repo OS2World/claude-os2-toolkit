@@ -74,9 +74,14 @@ paths - a clone inside the project, a sibling checkout, or `~/claude-os2-toolkit
 
 1. **Look for stranded work first.** For each referenced copy that is a git checkout, compare it with
    the toolkit source at `${user_config.toolkit_checkout}` (unset placeholder: `~/claude-os2-toolkit`): `git status`, and
-   `git log --oneline <source-head>..HEAD` after fetching one into the other. Report any commits or
-   uncommitted edits the source lacks and offer `os2-toolkit:contribute` to bring them in. Do not
-   discard them.
+   `git log --oneline <source-head>..HEAD` after fetching one into the other. If
+   `git merge-base` finds **no common ancestor** (an older, separately initialised history), commits
+   prove nothing - compare *content* instead: for each file the copy has or has edited, check its
+   paragraphs exist in the source, normalising punctuation (the source has had ASCII-only and
+   de-identification passes, so exact greps miss reworded-but-present text). Report any commits,
+   edits or content the source lacks and offer `os2-toolkit:contribute` to bring them in. Do not
+   discard them. If a check is blocked (sandbox, permissions), say which, and call the copy
+   *unverified*, not clean.
 2. **Rewrite the references** as plugin pointers: `<kit>/os2ref/X.md` -> "the toolkit's `os2ref/X.md`
    (via `os2-toolkit:os2-dev`)"; `<kit>/tools/foo.py` or `python3 ../tools/foo.py` -> `foo.py`;
    `<kit>/corpus/search.sh` -> `os2-corpus-search`. Keep every project-specific rule untouched.
