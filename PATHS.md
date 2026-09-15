@@ -110,7 +110,7 @@ and its extraction, one is canonical and the other is a copy (section 7). Prefer
 | adopt | derived text or an extraction already exists and its source is not on the machine | none on disk | `ITEM.md`, the adopted `text/` or `tree/`, `origin: unknown` (section 5) |
 
 - **Conversion is for citation.** Derived text keeps what a citation needs - page numbers for PDF
-  and DjVu (`== page 123 ==`), panel/section titles for INF - and is UTF-8 (IBM text is
+  and DjVu (`[[page 123]]`, as `pdf-to-text.sh` and `djvu2txt.py` write them), panel/section titles for INF - and is UTF-8 (IBM text is
   CP850/CP437; convert it, never leave it for `grep` to misread as binary). Markdown only where the
   structure survives conversion.
 - **Converters are the toolkit's own** (`inf2txt.sh`, `os2-pdf-to-text`, `djvu2txt.py` ...);
