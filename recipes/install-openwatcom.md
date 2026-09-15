@@ -24,7 +24,7 @@ echo 'int main(void){return 0;}' > t.c
 wcl386 -bt=os2 -l=os2v2 t.c -fe=t.exe && ls -l t.exe   # produced an OS/2 LX .exe
 ```
 `file t.exe` should show it's not a Linux ELF (it's an OS/2 LX module). Confirm with
-`python3 ../tools/lx_export.py t.exe`.
+`lx_export.py t.exe`.
 
 ## Notes
 - **C standard:** OpenWatcom 1.9 is **not full C99** - avoid mid-block declarations, VLAs, and some

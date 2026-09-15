@@ -19,7 +19,7 @@ enough. Grab the **Toolkit headers** if you want Claude to *verify* prototypes a
 > **Once you have material, `corpus/` turns it into something searchable.**
 > `corpus/build-inf-text.sh` extracts `.INF` books to greppable text;
 > `corpus/fetch-books.sh` and `corpus/fetch-edm2.sh` mirror the redbook and EDM2 sources below;
-> `corpus/search.sh` then searches everything in provenance order and refuses to let an
+> `os2-corpus-search` then searches everything in provenance order and refuses to let an
 > encoding or wrong-volume miss read as "IBM never documented this". See `corpus/README.md`.
 
 ## 0. Before downloading anything - look on the machine
@@ -83,7 +83,7 @@ in that doc (see its own preamble for what that tag means and how to re-verify a
 ## 3. Deeper IBM reference - optional (large)
 
 Only if `os2ref/` doesn't cover something. Once downloaded, read the compiled `.INF` books with
-`tools/inf2txt/inf2txt.sh <book.inf>` (see `recipes/read-ibm-books.md`).
+`inf2txt.sh <book.inf>` (see `recipes/read-ibm-books.md`).
 
 - **IBM Developer Connection for OS/2 (Device Driver Kit + docs).** The `.INF` programming books
   (`cpgref`, `gpi1-4`, `pm1-5`, `pddref`, `mmref`, `somref`, `wps1-3`, `rexxpg`, ...) that `os2ref/`
@@ -118,7 +118,7 @@ converts it to `$OS2DOCS/pdf_text/<name>.txt` with `[[page N]]` markers carrying
   *Caveat:* it targets OS/2 2.x with IBM C Set++, so the toolchain material (makefiles, `IBMDLL.CMD`,
   `-Ge-`) is period-specific - the PM and GPI content is not. Scanned-book text is OCR, so it is
   case-damaged and hyphenation-damaged: search fragments, case-insensitively, exactly as
-  `corpus/search.sh` does by default.
+  `os2-corpus-search` does by default.
 
 ## 4. Test + debug target - for running what you build (commercial or free)
 

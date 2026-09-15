@@ -1,0 +1,23 @@
+{
+  "name": "os2-toolkit",
+  "version": "0.2.0",
+  "description": "Build OS/2 software correctly: a verified, source-tagged OS/2 reference, tools to inspect LX/NE binaries, read IBM INF books and drive the OS/2 kernel debugger, and the disciplines that keep Claude from guessing OS/2 facts.",
+  "author": { "name": "phaelonimaire" },
+  "repository": "https://github.com/phaelonimaire/claude-os2-toolkit",
+  "license": "MIT",
+  "keywords": ["os2", "arcaos", "presentation-manager", "reverse-engineering", "kdb"],
+  "userConfig": {
+    "os2docs": {
+      "type": "string",
+      "title": "OS/2 document corpus root",
+      "description": "Where your locally built IBM book corpus lives (inf_text/, edm2/, pdf_text/ ...). See corpus/README.md.",
+      "default": "~/os2docs"
+    },
+    "toolkit_checkout": {
+      "type": "string",
+      "title": "Toolkit source checkout",
+      "description": "Your git clone of claude-os2-toolkit. Contributions are written there, never into the installed plugin copy.",
+      "default": "~/claude-os2-toolkit"
+    }
+  }
+}

@@ -11,7 +11,7 @@ ssh os2@<vm> 'cat C:/POPUPLOG.OS2' | tail -40
 An entry gives the **process**, the **fault type** (`SYS3175` access violation, `SYS2070`
 demand-load/bad-ordinal), the register dump, and a `MODULE object:offset`. Map that back:
 ```sh
-python3 ../tools/lx_disasm.py your.exe <object>:<offset>   # the faulting instruction
+lx_disasm.py your.exe <object>:<offset>  # the faulting instruction
 ```
 Copy `object:offset` straight from the log - the object number is decimal, the offset is hex
 (`1:0001a2b4`), which is how `lx_disasm.py` reads it. No `.SYM` file is needed; pass `--sym your.sym`
@@ -30,7 +30,7 @@ OS/2 reports *why* through an error code, not the boolean/handle it returns:
 The module loaded but an import didn't resolve (`SYS2070` bad ordinal), or a module/DLL wasn't found
 (`SYS1804`). Almost always a `.def`, import-name/ordinal, or `LIBPATH` problem - not your code:
 ```sh
-python3 ../tools/lx_export.py your.exe    # what it imports (DLL + ordinal/name) and exports
+lx_export.py your.exe  # what it imports (DLL + ordinal/name) and exports
 ```
 Confirm the imported DLL exports that ordinal/name, and that dependent DLLs are on
 `LIBPATH`/`BEGINLIBPATH` (`export BEGINLIBPATH=/path/to/dlls` before running). See

@@ -1,0 +1,14 @@
+{
+  "name": "claude-os2-toolkit",
+  "description": "The claude-os2-toolkit plugin: OS/2 reference, tools and disciplines for Claude Code.",
+  "owner": {
+    "name": "phaelonimaire"
+  },
+  "plugins": [
+    {
+      "name": "os2-toolkit",
+      "source": "./",
+      "description": "OS/2 reference, binary/INF/kernel-debugger tools, and development disciplines for Claude Code."
+    }
+  ]
+}

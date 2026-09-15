@@ -14,11 +14,11 @@ over a serial pipe.
 ## Driving it (from Linux)
 ```sh
 export KDB_VM_NAME="os2kdb"
-python3 ../tools/kdb_cmd.py --start-vm          # start + wait for the debugger prompt
-python3 ../tools/kdb_cmd.py "r"                 # registers
-python3 ../tools/kdb_cmd.py ".lm"               # loaded modules
-python3 ../tools/kdb_interactive.py             # interactive session (.regs/.stack/.bp/...)
-python3 ../tools/kdb_hang_triage.py             # diagnose a frozen system (never reboot first)
+kdb_cmd.py --start-vm  # start + wait for the debugger prompt
+kdb_cmd.py "r"         # registers
+kdb_cmd.py ".lm"       # loaded modules
+kdb_interactive.py     # interactive session (.regs/.stack/.bp/...)
+kdb_hang_triage.py     # diagnose a frozen system (never reboot first)
 ```
 `tools/kdb/` is the reusable Python library (connection/parser/session) if you script your own.
 

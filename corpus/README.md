@@ -15,7 +15,7 @@ you obtain yourself, and then make it searchable in a way that does not lie to y
 ```sh
 export OS2DOCS=~/os2docs                 # where the corpus lives (default)
 
-../tools/inf2txt/build.sh                # one-time: build the INF extractor
+inf2txt-build                            # one-time: build the INF extractor
 ./build-inf-text.sh /path/to/your/books  # .INF/.HLP -> greppable UTF-8 text
 ./fetch-books.sh                         # optional: IBM redbooks + docs mirror
 ./fetch-edm2.sh                          # optional: EDM2 wiki (community)

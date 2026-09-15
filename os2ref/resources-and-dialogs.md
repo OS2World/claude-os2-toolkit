@@ -163,7 +163,7 @@ Points that are easy to get wrong:
   unique mnemonic to each ... choice ... unless no unique mnemonic can be found". Neither `wrc` nor the
   compiler checks this, and a converted Windows menu inherits whatever `&` placement the original
   had - so a menu that gains items during a port can silently acquire a dead one. Read each menu's
-  mnemonics as a set after converting it - `tools/rc-mnemonics/check-mnemonics.py` does exactly that
+  mnemonics as a set after converting it - `check-mnemonics.py` does exactly that
   and exits non-zero on a duplicate. [OBS-RE - `Cu~t` and `Insert HTML/XML ~Tag` both claimed T in
   Notepad2's Edit menu after the Lines submenu was added; a later batch produced six at once.]
 - **Dialog coordinates are dialog units with a bottom-left origin**, like everything else in PM:

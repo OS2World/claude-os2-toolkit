@@ -520,7 +520,7 @@ rebuild had been configured `--without-progs`, which dropped 31 terminfo-compile
 the library: **280 exports shipped, 249 in mine.** Nothing about the *code* was wrong; the export
 *surface* was a subset.
 
-`~/claude-os2-toolkit/tools/lx_export.py` names this failure in one line — "compare the importing
+`lx_export.py` names this failure in one line — "compare the importing
 side's requested ordinal against the exporting side's entry table" — and `SYS2070` in
 `C:\POPUPLOG.OS2` resolves to `IMPORTER->DLL.symbol` at an offset, which points at the *expected*
 symbol, not the one actually run (a red herring that sent this investigation at codegen and the
@@ -537,7 +537,7 @@ linker first; both were exonerated).
   # names the shipped side exports (its import lib lists them):
   nm /@unixroot/usr/lib/<name>_dll.a | awk '/=.*\./{print $NF}' | sed 's/=.*//' | sort -u
   # vs. your rebuild's, or use the toolkit tool on the DLLs directly:
-  ~/claude-os2-toolkit/tools/lx_export.py <your>.dll        # exports + imports + ordinals
+  lx_export.py <your>.dll        # exports + imports + ordinals
   ```
   Equal symbol *set* built from the same configure ⇒ equal ordinals. A different count ⇒ stop.
 - This is why section 4's "load for one process only" is the safe way to *test* a rebuild: your own

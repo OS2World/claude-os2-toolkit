@@ -10,7 +10,7 @@ Developer Connection library (cpgref, gpi1-4, pm1-5, pddref, mmref...).
 
 Build first (no binary is shipped), then use:
 
-    ./build.sh                              # one-time; writes ./inf2txt
+    ./build.sh                              # one-time; writes ~/.local/share/os2-toolkit/inf2txt/inf2txt
     ./inf2txt.sh path/to/book.inf > book.txt
 
 ## Third-party note - read before redistributing a build

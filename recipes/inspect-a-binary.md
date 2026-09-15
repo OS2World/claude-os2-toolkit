@@ -5,17 +5,17 @@ These tools read the module tables directly; no OS/2 needed.
 
 ```sh
 # 32-bit LX modules (.EXE / .DLL)
-python3 ../tools/lx_export.py MODULE.dll     # object table, exports, imports, forwarders
-python3 ../tools/lx_disasm.py MODULE.dll <object>:<offset>   # disassemble at a location
-python3 ../tools/lx_entry_parms.py MODULE.dll                # entry-table / parameter view
+lx_export.py MODULE.dll                    # object table, exports, imports, forwarders
+lx_disasm.py MODULE.dll <object>:<offset>  # disassemble at a location
+lx_entry_parms.py MODULE.dll               # entry-table / parameter view
 
 # 16-bit NE modules
-python3 ../tools/ne_profile.py MODULE.dll    # format ID + NE segment/reloc/import profile
+ne_profile.py MODULE.dll                   # format ID + NE segment/reloc/import profile
                                              # (--list FILE to profile many at once;
                                              #  also writes ne_profile_result.json to CWD)
 
 # symbol maps (.sym -> text), when you have them
-python3 ../tools/sym2map.py MODULE.sym
+sym2map.py MODULE.sym
 ```
 
 Common uses:

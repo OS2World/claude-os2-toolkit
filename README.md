@@ -8,39 +8,60 @@ facts against IBM's own headers, and the working disciplines - so Claude builds 
 
 ## How to use it
 
+Install it once as a **Claude Code plugin**; every project on the machine then has it.
+
 ```sh
-mkdir myos2app && cd myos2app
-git clone git@github.com:phaelonimaire/claude-os2-toolkit.git claude-os2-toolkit
-claude          # start Claude Code
+git clone git@github.com:phaelonimaire/claude-os2-toolkit.git ~/claude-os2-toolkit
+claude plugin marketplace add ~/claude-os2-toolkit
+claude plugin install os2-toolkit@claude-os2-toolkit
 ```
-Then tell Claude:
 
-> I'm making an OS/2 program. Reference `./claude-os2-toolkit`.
-
-Claude reads [`START-HERE.md`](START-HERE.md), asks a couple of setup questions, and writes your
-project's `CLAUDE.md` with the right pointers. After that, just describe what you want ("add a
+Then, in your OS/2 project, start `claude` and run `/os2-toolkit:setup` (or just say *"I'm making an
+OS/2 program"*). Claude inventories the machine, asks a couple of setup questions, and writes your
+project's `CLAUDE.md` with pointers to the plugin. After that, just describe what you want ("add a
 Settings notebook page", "read a file's extended attributes", "subclass WPDataFile") and Claude
-routes into the reference, verifies against the headers, and writes the code. `git pull` to update.
+routes into the reference, verifies against the headers, and writes the code.
+
+| Skill | What |
+|---|---|
+| `os2-toolkit:os2-dev` | The map of the kit and the disciplines; loaded for any OS/2 task. |
+| `os2-toolkit:setup` | Wire a project up, or migrate one that used a copied kit. |
+| `os2-toolkit:contribute` | Write a finding back into your checkout, provenance-tagged and de-identified. |
+
+The tools land on your `PATH` (`lx_export.py`, `lx_disasm.py`, `inf2txt.sh`, `kdb_cmd.py`,
+`os2-corpus-search` ...). Two plugin options, set at install or later with `/plugin`: `os2docs` (your
+local book corpus, default `~/os2docs`) and `toolkit_checkout` (the clone contributions go to,
+default `~/claude-os2-toolkit`).
+
+**Updating:** `git -C ~/claude-os2-toolkit pull`, then
+`claude plugin marketplace update claude-os2-toolkit && claude plugin update os2-toolkit@claude-os2-toolkit`.
+
+**Do not copy the kit into each project.** Copies drift, and what a session learns gets stranded in
+them. Findings go into the checkout via `os2-toolkit:contribute`.
+
+**Working on the kit itself:** `claude --plugin-dir ~/claude-os2-toolkit` runs the checkout directly;
+`/reload-plugins` picks up edits; `claude plugin validate ~/claude-os2-toolkit` checks the manifest.
 
 ## What's inside (original work - redistributes no IBM or third-party code)
 
 | Path | What |
 |---|---|
 | `os2ref/` | 42 pristine, project-agnostic OS/2 reference docs - internals, the full app API surface, and (in `klibc-runtime-glue.md`) how the kLIBC/LIBC Next POSIX compatibility layer maps Unix-style fd/`fork`/signal/`malloc`/socket semantics onto it, for porting GCC/Unix code. `os2ref/README.md` is the router. |
+| `skills/` | The plugin's skills: `os2-dev` (map + disciplines), `setup`, `contribute`. |
+| `bin/` | `PATH` shims for the tools and corpus scripts. |
 | `tools/` | `inf2txt/` (read IBM `.INF` books as text); `lx_export` (objects/exports/imports), `lx_disasm` (disassemble at symbol/VA/`object:offset`), `lx_entry_parms` (per-ordinal parameter words), `sym2map` (`.SYM` -> addresses), `ne_profile` (16-bit NE) to inspect binaries; `kdb_*` (drive the OS/2 kernel debugger). |
 | `corpus/` | Scripts to build a **local** searchable corpus of the IBM books/redbooks/EDM2 on your own machine, plus `search.sh`, which searches it in provenance order. Ships none of that material. |
 | `recipes/` | Install / build / test / debug how-tos. |
 | `scaffolds/` | Starter skeletons (a PM app, a console app). |
 | [`sources.md`](sources.md) | Where to download the toolchain and IBM material this kit points at but does not ship. |
-| [`START-HERE.md`](START-HERE.md) | Claude's bootstrap instructions. |
+| [`START-HERE.md`](START-HERE.md) | Where Claude's instructions live, with or without the plugin. |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to add to the kit - facts not expression, provenance, de-identification, and the checklist a session runs before committing. |
 | [`os2-app-dev-guide.md`](os2-app-dev-guide.md) | The development workflow + disciplines. |
 | [`c-guide.md`](c-guide.md) | How to *write* correct OS/2 C - provenance, ABI-struct asserts, honest failure, memory ownership. |
 
-> **Paths in the recipes.** `recipes/*.md` write tool invocations as `../tools/lx_export.py`, i.e.
-> relative to the recipe's own directory. If you are standing in your project root (the usual case),
-> that is `claude-os2-toolkit/tools/lx_export.py`. Substitute whatever is right for where you are -
-> the recipes assume the toolkit's own layout, not yours.
+> **Tools in the recipes** are invoked by name (`lx_export.py MODULE.dll`) because the plugin puts
+> `bin/` on `PATH`. Using a plain clone without the plugin, add `<checkout>/bin` to `PATH`, or run
+> the scripts in `tools/` directly.
 
 ## What it does *not* ship
 

@@ -158,7 +158,7 @@ that had never been run** and counts that had drifted. Check these:
 - **If you add a tool flag, confirm it exists.** A documented flag the code lacks is a lie with a
   helpful tone.
 - **If you add an `os2ref/` doc:** add it to the router table *and* the contents list in
-  `os2ref/README.md`, and update the doc count in `README.md`, `START-HERE.md`, and
+  `os2ref/README.md`, and update the doc count in `README.md`, `skills/os2-dev/SKILL.md`, and
   `os2-app-dev-guide.md` (all three state it).
 - **Check your links.** Every `](path)` and every backticked `dir/file.md` must resolve.
 - **Write 7-bit ASCII only** - docs, scaffolds and tools alike. These files get read and edited on

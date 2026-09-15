@@ -6,11 +6,11 @@ Get the books per `../sources.md` section 3.
 
 ```sh
 # one-time build (Linux): needs Free Pascal + a fpGUI checkout (see tools/inf2txt/README.md)
-cd ../tools/inf2txt && ./build.sh          # produces the inf2txt binary
+inf2txt-build                                  # produces the inf2txt binary
 
 # use it
-./inf2txt.sh /path/to/cpgref.inf > cpgref.txt   # -> clean UTF-8 text on stdout
-grep -a -n "DosOpen" cpgref.txt                 # then grep the topic you need
+./inf2txt.sh /path/to/cpgref.inf > cpgref.txt  # -> clean UTF-8 text on stdout
+grep -a -n "DosOpen" cpgref.txt                # then grep the topic you need
 ```
 
 ## An empty grep result does not mean "IBM doesn't document it"
@@ -97,7 +97,7 @@ book says it, the line breaks hide it. Grep three to five words that fit inside 
 (`"as its mnemonic key"`), then read the lines around the hit. This is the failure mode most
 likely to make you believe an accurate quotation was invented.
 
-No binary is shipped - `build.sh` produces `tools/inf2txt/inf2txt` locally (one-time, ~30 s). It
+No binary is shipped - `inf2txt-build` (`tools/inf2txt/build.sh`) produces `~/.local/share/os2-toolkit/inf2txt/inf2txt` locally (one-time, ~30 s). It
 links fpGUI's docview parser, so the build needs an fpGUI checkout; `tools/inf2txt/README.md` has
 the prerequisites.
 

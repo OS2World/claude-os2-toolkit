@@ -28,9 +28,10 @@ manifest="$out/manifest.tsv"
 
 [ -x "$inf2txt" ] || {
     echo "build-inf-text.sh: $inf2txt not found" >&2; exit 127; }
-[ -x "$here/../tools/inf2txt/inf2txt" ] || {
+: "${INF2TXT_HOME:=${XDG_DATA_HOME:-$HOME/.local/share}/os2-toolkit/inf2txt}"
+[ -x "$INF2TXT_HOME/inf2txt" ] || [ -x "$here/../tools/inf2txt/inf2txt" ] || {
     echo "build-inf-text.sh: the inf2txt binary is not built yet." >&2
-    echo "  run: $here/../tools/inf2txt/build.sh" >&2
+    echo "  run: inf2txt-build   (or $here/../tools/inf2txt/build.sh)" >&2
     exit 127
 }
 

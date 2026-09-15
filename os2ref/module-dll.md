@@ -335,7 +335,7 @@ Two practical consequences:
   a standard dialog *looks*; it cannot alter what it *does*, because there is no code in it.
   Behaviour lives in `PMCTLS`.
 
-Establish these facts yourself with `tools/lx_export.py` (`--exports` / `--imports`) rather than
+Establish these facts yourself with `lx_export.py` (`--exports` / `--imports`) rather than
 trusting the table; that is exactly what it is for, and it takes one command per module.
 
 ---

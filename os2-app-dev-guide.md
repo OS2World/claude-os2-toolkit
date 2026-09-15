@@ -1,9 +1,9 @@
 # OS/2 Application Development Guide (for Claude)
 
 The working guide for building an OS/2 application with this kit: the disciplines that keep the code
-correct, and the build -> inspect -> test loop. `START-HERE.md` bootstraps a project; this is the
-reference you return to while working. It assumes the reference lives at `os2ref/` and tools at
-`tools/`.
+correct, and the build -> inspect -> test loop. The `setup` skill bootstraps a project; this is the
+reference you return to while working. It assumes the reference lives at `os2ref/`, and the tools
+(sources in `tools/`) are on `PATH` via the plugin's `bin/`.
 
 ## The disciplines (why this kit exists)
 
@@ -142,9 +142,9 @@ commenting load-bearing weirdness - see **`c-guide.md`**.
    `os2ref/module-dll.md`. Wrong ordinal/`.DEF` linkage is a top cause of `SYS`-error load failures.
 5. **Build** with the recipe for the chosen toolchain (`recipes/build-pm-app.md`). OpenWatcom:
    `wcc386` -> `wlink`, `wrc` for `.RC` resources. GCC/kLIBC: `gcc -Zomf`, `wlink` backend, `wrc`.
-6. **Inspect** the result: `tools/lx_export.py` lists an LX binary's objects, exports (entry table +
+6. **Inspect** the result: `lx_export.py` lists an LX binary's objects, exports (entry table +
    names, forwarders included) and imports (module list + the ordinals/names its fixups reference);
-   `lx_disasm.py` disassembles at a symbol, VA, or `object:offset`; `tools/ne_profile.py` profiles
+   `lx_disasm.py` disassembles at a symbol, VA, or `object:offset`; `ne_profile.py` profiles
    16-bit NE. Use these to confirm the module actually exports/imports what you intended before you
    ship it to the VM.
 7. **Test** on a real OS/2 (`recipes/setup-test-vm.md`): copy over (or build over SSH) and run.
@@ -169,7 +169,7 @@ commenting load-bearing weirdness - see **`c-guide.md`**.
 ## Deeper than `os2ref/`
 
 `os2ref/` is a representative reference, not exhaustive. For a call or field it doesn't cover, read
-the IBM source book directly: `tools/inf2txt/inf2txt.sh <book.inf>` turns a compiled `.INF`
+the IBM source book directly: `inf2txt.sh <book.inf>` turns a compiled `.INF`
 (`cpgref`, `pmwin`-family, `gpi*`, `pddref`, `somref`, `wps*`, `rexxpg`, ...) into text
 (`recipes/read-ibm-books.md`; get the books per `sources.md` section 3). Tag anything you take from them
 `[DOC-IBM]` with the book name.

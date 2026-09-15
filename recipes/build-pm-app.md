@@ -108,7 +108,7 @@ happen on the VM. Watch `BEGINLIBPATH`/`LIBPATH` so your app finds its DLLs at r
 ## After building - verify before you run
 Inspect the module actually exports/imports what you intended (`inspect-a-binary.md`):
 ```sh
-python3 ../tools/lx_export.py hello.exe      # exports/imports of the LX binary
-python3 ../tools/lx_disasm.py hello.exe ...  # disassemble an object:offset
+lx_export.py hello.exe      # exports/imports of the LX binary
+lx_disasm.py hello.exe ...  # disassemble an object:offset
 ```
 Then run it on the target (`setup-test-vm.md`); on a crash, read `C:\POPUPLOG.OS2`.

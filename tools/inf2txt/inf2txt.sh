@@ -15,10 +15,15 @@ dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 [ $# -ge 1 ] || { echo "usage: inf2txt.sh <path-to-inf>" >&2; exit 2; }
 [ -r "$1" ]  || { echo "inf2txt.sh: cannot read '$1'" >&2; exit 2; }
-[ -x "$dir/inf2txt" ] || {
-    echo "inf2txt.sh: $dir/inf2txt not built - run $dir/build.sh first" >&2
+# The binary is built per user (build.sh / inf2txt-build) into $INF2TXT_HOME;
+# a build left beside this script by an older checkout is still honoured.
+: "${INF2TXT_HOME:=${XDG_DATA_HOME:-$HOME/.local/share}/os2-toolkit/inf2txt}"
+if   [ -x "$INF2TXT_HOME/inf2txt" ]; then bin="$INF2TXT_HOME/inf2txt"
+elif [ -x "$dir/inf2txt" ];          then bin="$dir/inf2txt"
+else
+    echo "inf2txt.sh: inf2txt not built - run inf2txt-build (or $dir/build.sh) first" >&2
     exit 127
-}
+fi
 
 : "${INF2TXT_CP:=CP850}"
 
@@ -36,7 +41,7 @@ fi
 
 # Note: the exit status of this pipeline is the last stage's, not inf2txt's; the
 # -x check above is the portable guard (set -o pipefail is not POSIX sh).
-"$dir/inf2txt" "$1" \
+"$bin" "$1" \
  | sed -E 's/<[^>]*>//g' \
  | sed -E 's/[ \t]+$//' \
  | cat -s \
