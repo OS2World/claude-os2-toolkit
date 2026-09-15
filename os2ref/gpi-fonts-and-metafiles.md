@@ -251,6 +251,63 @@ Character presentation attributes that affect both measurement and drawing - `Gp
 [pmgpi.h:1524-1595]. `FIXED` is a `LONG` with an implicit binary point between the 2nd and 3rd
 hex digits (i.e. 1/65536 units) [os2def.h:309].
 
+### 2.6 Drawing Unicode: a logical font in code page 1200 or 1208 [OBS-RE]
+
+**The trap.** A program that holds text as Unicode and transcodes it to the 8-bit GPI code page
+before drawing (`unicode-conversion.md` section 9.3) sees every character that page lacks come out
+as a substitute, and concludes GPI cannot draw them. It can: ask for the logical font in a Unicode
+code page.
+
+**The fact.** Setting `FATTRS.usCodePage` (section 2.2) to **1200** (UCS-2, native byte order) or
+**1208** (UTF-8) with a Unicode outline face, then drawing with `GpiCharStringAt`, rendered Greek,
+Cyrillic, Japanese, `u`-umlaut, `e`-acute and the euro sign. Measured on Warp Server for e-business
+4.5, 20-pel character box, next to a code-page-850 control row:
+
+| Face, as `GpiQueryFonts` names it | 1200 | 1208 |
+|---|---|---|
+| `Times New Roman MT 30` | all drawn | all drawn |
+| `Times New Roman WT J` | all drawn | all drawn |
+| `Monotype Sans Duospace WT J` (fixed pitch) | all drawn | all drawn |
+| `Monotype Sans WT` | Japanese left blank | Japanese left blank |
+| `@Times New Roman WT J`, `@Monotype Sans Duospace WT J` | glyphs rotated - vertical-writing faces, not for horizontal text | same |
+
+- `GpiCreateLogFont` returned 2 (`FONT_MATCH`, which is also the nearest-match value - see 2.1) and
+  `GpiCharStringAt` succeeded for every row. `WinQueryCpList` on the same system listed both 1200
+  and 1208.
+- **Positions are per byte, and the byte layout matches a UTF-8 text engine.** In 1208,
+  `GpiQueryCharStringPosAt` returned one entry per byte: a character's lead byte carries its start
+  x and each continuation byte carries its end x. So text held as UTF-8 can be drawn and measured
+  as-is, with none of the source-byte bookkeeping transcoding needs. In 1200 the same holds per
+  two-byte code unit.
+- **There is no fallback between faces.** A character the chosen face lacks is simply not drawn -
+  no box, no substitute - which is what `Monotype Sans WT` did with Japanese.
+- **`GpiSetCp(hps, 1200)` on the default font** (no logical font) also worked for Greek, Cyrillic
+  and the euro sign; Japanese drew as boxes. The PS code page then applies to *every* later string,
+  so an 8-bit label drawn afterwards came out as boxes too. Restore the previous code page.
+- `\PSFONTS` on the measured system held `tnrwt_j.ttf`, `mtsans_w.ttf`, `mtsansdj.ttf` and
+  `tnrmt30.cmb` alongside the Type 1 faces; which file supplies which of the faces above was not
+  checked.
+
+**How to verify.** Enumerate faces with `GpiQueryFonts(hps, QF_PUBLIC | QF_PRIVATE, NULL, ...)`,
+create a logical font per candidate face with `usCodePage = 1208`, draw a UTF-8 string of known
+non-Latin characters with `GpiCharStringAt`, take a screenshot, and log what
+`GpiQueryCharStringPosAt` returns for the same bytes.
+
+**The tell.** Accented or non-Latin text drawing as substitutes in a program that transcodes to the
+GPI code page. Try a 1208 logical font in a Unicode face before deciding the platform cannot draw it.
+
+**Not established** [unverified]: whether eComStation and ArcaOS install the same faces; whether
+Type 1 or bitmap faces draw anything in 1208; and what `UNICODE.SYS` (loaded from `CONFIG.SYS` on
+the measured system) contributes.
+
+**DBCS code pages are per byte too** [DOC-IBM - *DBCS Design Guide and Information for OS/2*, os2books
+`dbcs/os2dbcs`, topic *Character vs. Byte*]: with a mixed code page, a string's count is in bytes,
+and the increment and position arrays of `GpiCharStringPos(At)` and `GpiQueryCharStringPos(At)`
+have one element per byte. For a double-byte character only the first byte's element is meaningful;
+IBM says the second byte's increment is ignored and its position is unknown. That differs from what
+1208 returned above, where continuation bytes carried the character's end - do not assume one
+behaviour from the other.
+
 ---
 
 ## 3. Bitmaps

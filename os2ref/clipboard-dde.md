@@ -377,6 +377,21 @@ system atom table guarantees both applications derive the same format id.
 The `MFP` (metafile) and `CPTEXT` (codepage text) payload structures used by the corresponding
 formats are defined alongside, packed on a 2-byte boundary [DOC-IBM `pmwin.h:3652-3675`].
 
+`CPTEXT` is four `USHORT`s - `idCountry`, `usCodepage`, `usLangID`, `usSubLangID` - followed by the
+text itself (`abText`, declared with one element as the start of a variable-length tail) [DOC-IBM
+`pmwin.h:3667-3674`]. Its name string is `SZFMT_CPTEXT`, `"Codepage Text"` [DOC-IBM `pmwin.h:3642`].
+
+> **Codepage Text is documented for DDE, not for the clipboard.** `pmwin.h` introduces the `SZFMT_*`
+> names with a comment calling them standard "DDE and clipboard" formats [DOC-IBM `pmwin.h:3624`],
+> but IBM's books describe `SZFMT_CPTEXT` only as a DDE data format, for passing "multiple-language
+> strings without changing the conversation context" [DOC-IBM - `pm4.txt`, DDESTRUCT `usFormat` and
+> *Unique Data Formats*]. Searched `pm2.txt`-`pm5.txt` for any clipboard use of it: none. Before
+> building a paste path around it, find out whether any PM application actually offers it.
+> (Negative result.)
+>
+> Clipboard text can contain DBCS characters: IBM lists the clipboard as a source of DBCS input
+> alongside the keyboard [DOC-IBM - *DBCS Design Guide and Information for OS/2*, *Keyboard Input*].
+
 ---
 
 ## 8. DDE messages [DOC-IBM `pmwin.h:4485-4496`]

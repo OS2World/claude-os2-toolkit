@@ -366,10 +366,23 @@ dialog box) should match the code page of the queue. In general, **code page 850
 for both an application and its resources**" - because 850 "contains most of the characters in other
 supported code pages."
 
-**The queue code page can change under you.** The `HK_CODEPAGECHANGE` hook notifies that a message
-queue's code page has changed, reporting the previous and new values; "the new code page is set
-before this hook is called" [DOC-IBM - `pm1.txt`]. Cached text measurements or converted buffers
-must be invalidated when it fires.
+**The queue code page can change under you.** ~~"The `HK_CODEPAGECHANGE` hook"~~ CORRECTED: the hook
+constant is **`HK_CODEPAGECHANGED`** (12) [DOC-IBM `pmwin.h:4045`]; `HK_CODEPAGECHANGE` does not exist,
+so code written from the old spelling fails to compile. The slip is easy to make because IBM documents
+the hook procedure as `CodePageChangedHook`, taking the queue handle, the previous code page and the
+new one [DOC-IBM - `pm1.txt` *CodePageChangedHook*; `pmwin.h:4046`]. It notifies that a message
+queue's code page has changed; "the new code page is set before this hook is called" [DOC-IBM -
+`pm1.txt`]. Cached text measurements or converted buffers must be invalidated when it fires.
+
+Two consequences for a program that caches conversion objects:
+
+- **An object cached by code-page number is not stale after the hook fires.** A numbered table does
+  not change; what changes is *which* number the queue uses. Query `WinQueryCp` when you need it
+  rather than remembering it, and the cache needs no invalidation.
+- **Cache for stateless use only.** A conversion object carries shift state for stateful code sets
+  (the `state` attribute, section 6.1), so an object reused across whole buffers can begin one
+  conversion in the state the previous one ended in. Reusing one per character for a PC keyboard or
+  display code page is safe; for whole files, open a fresh object or reset it.
 
 > **Porting note.** Code arriving from a UTF-16 platform (Win32 `W` APIs) or a UTF-8 one has *one*
 > string encoding; PM has three scopes plus a per-resource declaration. The conversion boundary must
@@ -454,8 +467,21 @@ Two details make that more than a call to `UniUconvFromUcs`:
   character. Otherwise a caret can be placed *inside* a character.
 
 A character the display code page cannot represent should be drawn as a visible substitute rather
-than dropped: dropping it silently shifts everything after it and is much harder to recognise. This
-is a genuine limit of an 8-bit display page, not a defect - CP850 has no Greek.
+than dropped: dropping it silently shifts everything after it and is much harder to recognise.
+
+**The substitute you get is not `?`.** `UniUconvFromUcs` substitutes by default (section 6.2), and
+converting to code page 437 the substitute came back as byte `0x7F`, which GPI draws as the small
+"house" glyph. A `?` only appears if your own code supplies one for a conversion that produced
+nothing. [OBS-RE - Greek letters in a UTF-8 buffer, converted one character at a time to CP437 for
+drawing, each drew as the house glyph, which is `0x7F` in CP437; separately, a byte with no mapping,
+converted to CP437 when a file was saved, was stored as `0x7F`.] *Tell:* rows of little houses where
+accented or foreign letters should be.
+
+~~"This is a genuine limit of an 8-bit display page, not a defect - CP850 has no Greek."~~ CORRECTED:
+it is a limit of *transcoding to the 8-bit GPI code page*, not of GPI. A logical font requested in
+code page 1200 or 1208 with a Unicode outline face draws Greek, Cyrillic and Japanese directly, and
+in 1208 needs no source-byte map at all - see `gpi-fonts-and-metafiles.md` section 2.6. The wrong
+reading was natural: the transcoding path was the only one that had been tried.
 
 > **`GpiQueryCp` is a hint, not an answer.** It can report `0` ("the default") on a freshly created
 > presentation space, and can report a value `UniMapCpToUcsCp` will not map. Code that trusts it and

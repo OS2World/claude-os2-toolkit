@@ -685,10 +685,139 @@ which tells the receiver which fields of the message are valid:
 | `KC_KEYUP` | `0x0040` | This is a key-release (else key-press). |
 | `KC_PREVDOWN` | `0x0080` | The key was already down (auto-repeat). |
 | `KC_LONEKEY` | `0x0100` | A shift key pressed and released alone. |
-| `KC_DEADKEY` | `0x0200` | A dead key. |
+| `KC_DEADKEY` | `0x0200` | The character code is a dead key's glyph (an accent). See *Dead keys* below. |
+| `KC_COMPOSITE` | `0x0400` | The character code combines this key with the preceding dead key. |
+| `KC_INVALIDCOMP` | `0x0800` | This key does not combine with the preceding dead key. See *Dead keys*. |
+| `KC_TOGGLE` | `0x1000` | Defined; not covered here. |
+| `KC_INVALIDCHAR` | `0x2000` | The character is not valid for the current translation tables [DOC-IBM - `pm4.txt` *Message Flags*]. |
+| `KC_DBCSRSRVD1` | `0x4000` | Reserved (DBCS). |
+| `KC_DBCSRSRVD2` | `0x8000` | Reserved (DBCS); IBM's private DBCS header calls it the interim-character flag. See *DBCS characters*. |
 
-`mp1` also carries the repeat count and scan code; `mp2` carries the character code and
-virtual-key code. `WM_VIOCHAR` (`0x007b`) is the advanced-VIO keystroke variant.
+Values [DOC-IBM `pmwin.h:1389-1408`]; meanings of the composite and invalid-composite flags
+[DOC-IBM - `pm3.txt` *WM_CHAR Field - fsflags*].
+
+`mp1` also carries the repeat count (`CHAR3FROMMP`) and scan code (`CHAR4FROMMP`); `mp2` carries the
+character code `usch` (`SHORT1FROMMP`) and the virtual-key code (`SHORT2FROMMP`) - the `CHRMSG`
+layout [DOC-IBM `pmwin.h:1429-1436`]. `WM_VIOCHAR` (`0x007b`) is the advanced-VIO keystroke variant.
+
+#### `usch` is a code-page character - convert it before storing it as Unicode [DOC-IBM]
+
+**The trap.** A control that keeps its text as UTF-8 (or UCS-2) inserts `usch` as if it were
+already in that encoding. ASCII keys work, so nothing looks wrong until someone types an accented
+letter. [OBS-RE - a UTF-8 editor control that inserted `usch` unconverted: Alt+keypad 129
+(`u`-umlaut in CP437) was stored as a lone `0x81`, invalid UTF-8; in a document saved back to an
+8-bit code page the same keystroke became `0x7F`, a different character, after the save's
+conversion substituted it. Both saves reported success.]
+
+**The fact.** `usch` is the key's character "resulting from the current code page" [DOC-IBM -
+`pm3.txt` *WM_CHAR Field - usch*]. Which code page is not stated on that page; IBM's DBCS guide
+names the **message queue code page** for `WM_CHAR` [DOC-IBM - *DBCS Design Guide and Information for OS/2*, os2books
+`dbcs/os2dbcs`, topic *WM_CHAR*], consistent with text entered in a dialog arriving "in the code page
+of the queue" [DOC-IBM - `pm5.txt` *Code Pages*]. Read it with `WinQueryCp(HMQ_CURRENT)` [DOC-IBM
+`pmwin.h:4163`] and convert through a `UniUconv` object for that code page
+(`unicode-conversion.md`). A per-code-page cached object is fine here: SO/SI shift codes belong to
+host (EBCDIC) mixed data, and PC data - single- or double-byte - has none [DOC-IBM - *DBCS Design
+Guide and Information for OS/2*, *Code Translation*], so a PC code page carries no state from one
+character to the next.
+
+**How to verify.** Type Alt plus a keypad code above 127, save, and hexdump the file
+(`recipes/setup-test-vm.md` shows the scancodes).
+
+**The tell.** An invalid-byte marker, or the wrong letter after saving, exactly where an accented
+character was typed.
+
+#### Dead keys [DOC-IBM]
+
+IBM gives one rule per flag [DOC-IBM - `pm3.txt` *WM_CHAR Field - fsflags*]: for `KC_DEADKEY` the
+application shows the dead key's glyph **without advancing the cursor**; `KC_COMPOSITE` carries the
+combined character; for `KC_INVALIDCOMP` the application advances past the dead-key glyph and then,
+"if the current character is not a space", sounds the alarm and shows the new character.
+
+- **Nothing guarantees what follows a dead key.** `pm3.txt` does not say; `pm4.txt` says only that
+  the next `WM_CHAR` is *typically* a `KC_COMPOSITE` message [DOC-IBM - `pm4.txt` *Message Flags*].
+  Handle a plain character message after a dead key too.
+- **The trap:** a `KC_DEADKEY` message also carries `KC_CHAR` [DOC-IBM - `pm4.txt` *Message Flags*],
+  so a handler that inserts every `KC_CHAR` message types the accent *and* then the composite.
+- **A worked technique** [SRC - `TYPER.C`, `TyperChar`, in the DBCS sample archive
+  `pub/os2/dev/samples/misc/DBCS_1990-03-19.zip` on Hobbes]: store the dead key's glyph, then step
+  the insertion point back over it (`typer.c:293`) so the next `KC_COMPOSITE` or `KC_INVALIDCOMP`
+  character overwrites it; on `KC_INVALIDCOMP` with a space, step forward over the glyph instead
+  (`typer.c:270-274`). That sample beeps on any other invalid composite and does *not* store the new
+  character (`typer.c:280`) - narrower than the `pm3.txt` wording.
+
+Not yet observed on a keyboard layout that has dead keys [unverified].
+
+#### The repeat count [DOC-IBM]
+
+When key repeat outruns the application, PM folds the repeats into a single `WM_CHAR` and raises the
+count byte; IBM advises checking every message so no keystroke is lost, and also says a program may
+ignore the count - arrow keys being the example where skipping ahead is unwanted [DOC-IBM - `pm4.txt`
+*Keyboard Messages*].
+
+#### DBCS characters [DOC-IBM]
+
+**The trap.** Searching the Toolkit books for how a double-byte character arrives in `usch` finds
+nothing - the `pm3.txt` entry says only "Character code" - and it is tempting to record it as
+undocumented and refuse such input. It is documented, in a different book. [Negative result:
+`pm2.txt`-`pm5.txt`, `cp*.txt` and both reference corpora were searched first.]
+
+**The fact.**
+
+- With a combined (DBCS) queue code page, a single-byte character is in the low byte of `usch` with
+  the high byte zero; a **double-byte character has its first (lead) byte in the low byte and its
+  second byte in the high byte** [DOC-IBM - *DBCS Design Guide and Information for OS/2*, os2books `dbcs/os2dbcs`, topic
+  *WM_CHAR*]. That is `CHAR1FROMMP(mp2)` and `CHAR2FROMMP(mp2)` [DOC-IBM `pmwin.h:185-186`].
+- Characters from the input method arrive as ordinary `WM_CHAR` messages **without a scan code**,
+  and DBCS text can also arrive from the clipboard [DOC-IBM - DBCS guide, topics *Input Mechanism in
+  DBCS PM* and *Keyboard Input*]. Do not require `KC_SCANCODE` on character messages.
+- **`WM_QUERYCONVERTPOS`** (`0x00b0`; replies `QCP_CONVERT` 1, `QCP_NOCONVERT` 0) [DOC-IBM
+  `pmwin.h:4514-4518`] asks the focus window whether conversion may start and where its cursor is.
+  The default window procedure answers `QCP_CONVERT` with a -1,-1 position [DOC-IBM - `pm3.txt`
+  *WM_QUERYCONVERTPOS - Default Processing*], which gives fixed-position conversion; answering
+  `QCP_CONVERT` with the cursor rectangle gives on-the-spot conversion [DOC-IBM - DBCS guide,
+  *On-The-Spot Conversion in DBCS PM*]. `FCF_DBE_APPSTAT` (`0x80000000`, under `INCL_NLS`)
+  [DOC-IBM `pmwin.h:2711`] enables DBCS input and the keyboard status area for a frame [DOC-IBM -
+  DBCS guide, *DBCS Input and PM Application Programs*].
+- **Interim characters.** The DBCS DDK's *private* header defines `KC_DBE_INTERIMCHAR` as
+  `KC_DBCSRSRVD2` under "KC_ flags definition of WM_CHAR", and adds `QCP_VERTICAL` 2 and
+  `QCP_SHIELD` 0x8000 as `WM_QUERYCONVERTPOS` replies [DOC-IBM - DBCS DDK `H/os2nlsp.h:34-36`,
+  `:228-230`]; the public `H/os2nls.h:374` has `DBE_MCTL_INTERIMREQUEST` for `WinDBCSModeControl`.
+  When PM sends interim characters unrequested was not found [unverified]; a handler that inserts
+  text should at least not insert a message carrying that bit.
+
+**Prior art that works on non-DBCS OS/2** [SRC - Hobbes]:
+
+- **KIME 0.1.4**, a Korean input method (`pub/os2/util/international/KIME_0-1-4.zip`, source in the
+  nested `kimesrc.zip`), posts each finished character as one `WM_CHAR` with `KC_CHAR`, repeat 1,
+  scan code 0, lead byte low (`kime/kimehook.c:316-327`). It leaves a window's keystrokes alone
+  unless it judges the window DBCS-capable (`kime/kimehook.c:633-634`); when the user toggles
+  Hangul mode it re-tests the window by sending `WM_QUERYCONVERTPOS` and requiring `QCP_CONVERT`
+  (`kime/kimehook.c:629-631`, `kime/khserver.c:299-313`). Its readme has the user add 949 to
+  `CODEPAGE=` and start the target program after `chcp 949`, so the bytes arrive in the target's
+  own code page.
+- **KShell 0.8.1**, a PM window for VIO programs with DBCS I/O (`pub/os2/util/shell/KShell_0-8-1.zip`,
+  nested `kshellsrc.zip`), treats `KC_CHAR` without `KC_SCANCODE` as clipboard or DBCS input and
+  forwards the low byte, then the high byte if non-zero (`viodmn.c:827-839`); it pastes DBCS text as
+  one `WM_CHAR` per character with the lead byte low (`kshell.c:776-808`), and swallows
+  `KC_VIRTUALKEY` messages whose key code is 0x80-0xFF, the DBCS virtual-key range
+  (`kshell.c:1204-1205`; `VK_DBCSFIRST`/`VK_DBCSLAST` at `pmwin.h:1525-1526`).
+
+**The consequence worth remembering:** a custom control that leaves `WM_QUERYCONVERTPOS` to
+`WinDefWindowProc` answers `QCP_CONVERT`, so it passes KIME's `WM_QUERYCONVERTPOS` test even on
+Western OS/2 - whether or not it was written with DBCS in mind. If it then refuses or mangles a
+non-zero high byte in `usch`, Korean input breaks there. [Inferred from the default processing
+above and KIME's source; not observed with KIME running.]
+
+**Not established** [unverified]: whether a message queue starts in its process's code page
+(`pm5.txt` *Code Pages* says so for a GPI presentation space only).
+
+#### AltGr characters: the flags are not documented [DOC-IBM]
+
+`VK_ALTGRAF` is `0x0C` [DOC-IBM `pmwin.h:1467`], but no source found says which `KC_*` shift flags
+accompany a *character* produced with AltGr. Searched: `pm2.txt`-`pm5.txt`, `cpgref.txt`, both
+reference corpora. (Negative result.) A handler that treats `KC_CTRL | KC_ALT` character messages as
+shortcuts may be discarding AltGr characters; observe on a layout that has them before relying on
+either reading.
 
 #### `F10` never reaches the focus window [OBS-RE]
 
