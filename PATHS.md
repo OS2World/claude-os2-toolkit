@@ -67,8 +67,8 @@ $OS2_LIBRARY/
   media/               install and disc images, installed-system trees, VM disk images and templates
   toolchains/          compilers, linkers and analysis tools the user keeps for OS/2 work
   notes/               OS/2 knowledge sessions established that is not a published reference (section 10)
-  state/               the toolkit's own machine-local state: search index, knowledge cache, crawl
-                       logs, tool builds, regenerable extractions - never user material
+  state/               the toolkit's own machine-local state: crawl logs, tool builds, regenerable
+                       extractions - never user material, and nothing that cannot be rebuilt
 ```
 
 A category directory holds only items: `<category>/<slug>/`. **The slug** is lowercase
@@ -89,6 +89,12 @@ samples and compilers together. It is one item in its primary category, and its 
 without copying: converted books as a `docs/` item, samples as an `examples/` item, a bundled
 compiler as a `toolchains/` item. Each part has its own `ITEM.md` with `part_of:` the parent and
 `paths:` pointing into it.
+
+**The knowledge cache is not library state.** `know`'s store (`$OS2_KNOW_DB`, default
+`~/.local/share/os2-toolkit/know.db`) holds chunks of ingested material, which are re-ingestable,
+*and* the facts and negative results a session established, which are not. It therefore lives
+outside the library, survives the library being moved or rebuilt, and works when no library is
+configured at all. What belongs in the library is the material it indexes.
 
 ## 4. Canonical form and modes
 
