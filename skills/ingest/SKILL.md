@@ -59,9 +59,16 @@ own item or reported as diverged - ask.
 - **Slug:** lowercase `publisher-title[-edition]`, e.g. `ibm-os2-toolkit-4.5`.
 - **Canonical form** (section 4): archive for install media and kits as distributed; tree for
   material read constantly; one of them only.
-- **Mode:** `link` (usable where it is, stable location) - `convert` (INF/HLP/PDF: link the original,
-  text goes into the library) - `import` (temporary location like a downloads folder or a mounted
-  disc: **ask** whether to copy or move it in) - `adopt` (existing converted text whose source is gone).
+- **Mode:** `link` is the **default** - the material has a home already and keeps it. `convert`
+  (INF/HLP/PDF: link the original, derived text goes into the library) - `import` ONLY when there is
+  no home to keep: a downloads folder, a mounted disc, something loose in `$HOME`, and then **ask**
+  whether to copy or move - `adopt` (existing converted text whose source is gone).
+- **Respect a layout the user already maintains.** If they keep every ISO in one directory, their
+  VMs under the hypervisor, or source trees where they cloned them, do not propose moving any of it:
+  file it where it is. A user who has already categorised their material has told you where things
+  go - the library records that, it does not overrule it.
+- **Virtual machines are never moved** (PATHS.md section 9): the hypervisor owns their registration
+  and snapshot chains. Record which machine is a template or has a special use, and link it.
 - **Multi-part downloads** (Toolkit, DDK, developer discs): one item in the primary category, plus
   part items (`--part-of <parent>`) for the books (`docs`), samples (`examples`), bundled compilers
   (`toolchains`), each linking into the parent's tree.

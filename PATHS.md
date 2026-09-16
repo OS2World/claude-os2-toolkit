@@ -10,9 +10,20 @@ OS/2 material arrives piecemeal: a PDF someone downloaded, a folder of INF books
 image, a source archive, a debugger session's notes. Left alone it scatters across the disk and gets
 copied - into project trees, next to its own archive, onto a second disk "for now". Every tool then
 needs to be told where each piece is, and a probe of a wrong location reads as "not documented". So
-the toolkit keeps **one library** with a fixed layout, brings material into it when the user
-mentions it, and tracks the copies it finds. Nothing committed to the toolkit or to a project names
-a location on the user's disk.
+the toolkit keeps **one library**: a fixed vocabulary for what material *is*, and one place to ask
+where it lives. Nothing committed to the toolkit or to a project names a location on the user's disk.
+
+**The library is an index, not a filing cabinet.** Its categories describe material; they do not
+demand that you move it. The default is to record material **where it already is** - if you keep
+every ISO in one directory, or your VMs under the hypervisor, or a source tree where you cloned it,
+that is where it stays and the library points at it. A layout you already maintain is respected, not
+replaced. Material is copied in only when it has no home of its own: a downloads folder, a mounted
+disc, something loose in a home directory (section 4).
+
+Two cases where the pull to reorganise is strongest, and the answer is the same both times:
+**virtual machines stay under their hypervisor** - it owns their registration and their snapshot
+chains, so the library records only which machine is a template or has a special use (section 9);
+and **disc images stay in whatever directory you keep disc images in**.
 
 The dry run's lesson: **most scatter is duplication, not location.** A library that only records
 where things are makes them findable but frees nothing. Knowing which copy is canonical, and
@@ -109,7 +120,7 @@ and its extraction, one is canonical and the other is a copy (section 7). Prefer
 
 | Mode | When | Canonical form | Library holds |
 |---|---|---|---|
-| link | usable in place, location stable | stays where it is | `ITEM.md`, `original` symlink |
+| link | **the default** - it has a home already, including one in a layout you maintain | stays where it is | `ITEM.md`, `original` symlink |
 | convert | not greppable as it stands (INF, HLP, PDF, DjVu, archive of those) | stays where it is | `ITEM.md`, `original`, `text/` (and `tree/` if an archive had to be opened) |
 | import | location is temporary (downloads, a mounted disc, a scratch dir), or the user asks | copied or moved in - **the user chooses, and is asked** | `ITEM.md`, `files/`, and `text/`/`tree/` if converted |
 | adopt | derived text or an extraction already exists and its source is not on the machine | none on disk | `ITEM.md`, the adopted `text/` or `tree/`, `origin: unknown` (section 5) |
