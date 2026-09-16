@@ -54,7 +54,10 @@ Derived output never lands anywhere but the library. That is the rule that preve
 
 ## 2. The root
 
-One setting: **`OS2_LIBRARY`**, the library root.
+Two kinds of setting, and they answer different questions.
+
+**`OS2_LIBRARY`** - the library **root**, which holds the bookkeeping: one `ITEM.md` per item, the
+symlinks, and converted text. It is small; one directory is fine.
 
 | Order | Source |
 |---|---|
@@ -62,8 +65,25 @@ One setting: **`OS2_LIBRARY`**, the library root.
 | 2 | `${XDG_CONFIG_HOME:-~/.config}/os2-toolkit/library` - a one-line file holding the path |
 | 3 | default: `${XDG_DATA_HOME:-~/.local/share}/os2-toolkit/library` |
 
-The `setup` skill asks once whether the default is fine or the user wants somewhere visible (a data
-disk, `~/os2`), and writes the config file. Everything else in this spec is relative to the root.
+**A category home** - where material of one kind lives *when the library has to place some*, i.e.
+an import or derived output. Linked material needs no home: it stays where it already is, which is
+the common case. Resolution per category: `$OS2_<CATEGORY>_HOME` -> `<CATEGORY>_HOME` in the config
+-> under the root.
+
+```
+LIBRARY_ROOT=/home/me/os2
+MEDIA_HOME=/data/iso          # this user already keeps every disc image here
+```
+
+`os2-lib where` prints the eight distinctions with a line on each and shows where they currently
+point; `os2-lib init <root> --save [--home media=/data/iso ...]` records them. A home that does not
+exist is refused rather than created: the library records where material is, it does not invent
+locations for it.
+
+The `setup` skill runs that as a conversation - it names the distinctions, then offers defaults for
+everything or a per-category mapping for the places a user already maintains. Someone who has
+already organised their disk has said where things go; the library records that rather than
+overruling it. Everything else in this spec is relative to the root.
 
 ## 3. Layout
 

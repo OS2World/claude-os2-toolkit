@@ -20,8 +20,23 @@ os2-lib root && os2-lib roles      # what is filed, by role
 os2-lib check                      # anything missing, unconverted or unmounted
 ```
 
-- **No library yet** (the root does not exist): ask where it should live, then
-  `os2-lib init <path> --save` - or `os2-lib init` for the default `os2-lib root` printed.
+- **No library yet** (the root does not exist): set it up, and this is a conversation, not a
+  default to impose. Show the user what the library distinguishes - `os2-lib where` prints the
+  eight kinds and one line on each - and explain the two different "where"s, because they are easy
+  to conflate:
+  - the **root** holds the bookkeeping: an `ITEM.md` per item, the symlinks, and converted text. It
+    is small, and one directory is fine.
+  - a **category home** is where material of that kind lives *when the library has to place some* -
+    an import, or derived output. Material that is linked needs no home at all: it stays where it
+    already is, which is the common case.
+
+  Then offer both routes plainly:
+  - *"defaults for everything"* -> `os2-lib init <root> --save`;
+  - *"I already keep some of this somewhere"* -> name those categories and leave the rest to the
+    root: `os2-lib init <root> --save --home media=/where/the/isos/are --home source=/where/trees/live`.
+
+  A user who has already organised their disk has told you where things go. Record that; do not
+  propose moving any of it, and do not invent a location for a category they did not mention.
 - **Material missing** - no `toolkit-headers`, no `toolkit-books`: ask whether the user has it. If
   they do not know, look, and show what you found rather than using it directly:
   ```sh

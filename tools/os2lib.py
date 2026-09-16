@@ -71,18 +71,67 @@ def config_file():
     return os.path.join(base, "os2-toolkit", "library")
 
 
+def read_config():
+    """The config file as a dict. Two shapes are accepted, because the first
+    one shipped: a bare path (the library root, one line), or KEY=VALUE lines.
+
+        LIBRARY_ROOT=/home/me/os2
+        MEDIA_HOME=/data/iso          # this user already keeps disc images here
+
+    A *_HOME names where MATERIAL of that category lives when the library has to
+    put some there - an import, or derived text. It is not where the item's
+    bookkeeping goes: ITEM.md, the symlinks and text/ always live under the
+    root, and they are small. Linked material needs no home at all; it stays
+    where it already is, which is the usual case.
+    """
+    cfg = {}
+    try:
+        with open(config_file()) as f:
+            text = f.read()
+    except OSError:
+        return cfg
+    # Decide the shape from the first MEANINGFUL line. Deciding it from the
+    # literal first line made a config written by `init --save` unreadable: that
+    # file opens with a comment, so the comment became the library root and every
+    # category home resolved under it. The real config was the old bare-path form
+    # and kept working, which is how it went unnoticed.
+    meaningful = [ln.strip() for ln in text.split("\n")
+                  if ln.strip() and not ln.strip().startswith("#")]
+    if meaningful and "=" not in meaningful[0]:
+        cfg["LIBRARY_ROOT"] = meaningful[0]                      # the original one-line form
+        return cfg
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        cfg[k.strip().upper()] = os.path.expanduser(v.strip())
+    return cfg
+
+
 def library_root():
     """$OS2_LIBRARY -> config file -> default (PATHS.md section 2)."""
-    v = os.environ.get("OS2_LIBRARY")
-    if not v:
-        try:
-            with open(config_file()) as f:
-                v = f.read().strip()
-        except OSError:
-            v = ""
+    v = os.environ.get("OS2_LIBRARY") or read_config().get("LIBRARY_ROOT", "")
     if not v:
         base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
         v = os.path.join(base, "os2-toolkit", "library")
+    return os.path.abspath(os.path.expanduser(v))
+
+
+def category_home(category):
+    """Where material of this category goes when the library must place some.
+
+    $OS2_<CATEGORY>_HOME -> <CATEGORY>_HOME in the config -> under the root.
+    A user who already keeps every disc image in one directory says so once,
+    here, and nothing else in the toolkit has to know about it.
+    """
+    if category not in CATEGORIES + [STATE]:
+        raise LibError("unknown category '%s' (known: %s)"
+                       % (category, ", ".join(CATEGORIES + [STATE])))
+    env = os.environ.get("OS2_%s_HOME" % category.upper())
+    v = env or read_config().get("%s_HOME" % category.upper(), "")
+    if not v:
+        return os.path.join(library_root(), category)
     return os.path.abspath(os.path.expanduser(v))
 
 
@@ -342,14 +391,62 @@ def cmd_root(a):
 
 def cmd_init(a):
     root = os.path.abspath(os.path.expanduser(a.path)) if a.path else library_root()
+    homes = {}
+    for spec in a.home or []:
+        cat, sep, where = spec.partition("=")
+        if not sep or cat not in CATEGORIES + [STATE]:
+            raise LibError("--home must be CATEGORY=PATH, CATEGORY one of: %s"
+                           % ", ".join(CATEGORIES + [STATE]))
+        homes[cat.upper()] = os.path.abspath(os.path.expanduser(where))
     for c in CATEGORIES + [STATE]:
         os.makedirs(os.path.join(root, c), exist_ok=True)
+    for cat, where in homes.items():
+        if not os.path.isdir(where):
+            raise LibError("--home %s=%s: not a directory. Name a place that "
+                           "exists; the library records material, it does not "
+                           "invent locations for it." % (cat.lower(), where))
     if a.save:
         os.makedirs(os.path.dirname(config_file()), exist_ok=True)
+        lines = ["# The OS/2 library. LIBRARY_ROOT holds the bookkeeping:",
+                 "# ITEM.md, the symlinks, and converted text. A <CATEGORY>_HOME",
+                 "# says where MATERIAL of that kind lives when the library has",
+                 "# to place some - linked material stays where it already is.",
+                 "LIBRARY_ROOT=%s" % root]
+        for cat in sorted(homes):
+            lines.append("%s_HOME=%s" % (cat, homes[cat]))
         with open(config_file(), "w") as f:
-            f.write(root + "\n")
-        print("saved %s -> %s" % (config_file(), root))
+            f.write("\n".join(lines) + "\n")
+        print("saved %s" % config_file())
     print(root)
+    for cat in sorted(homes):
+        print("  %-11s material lives in %s" % (cat.lower(), homes[cat]))
+
+
+CATEGORY_MEANS = {
+    "docs":       "documentation: books, references, manuals, articles, wiki mirrors",
+    "source":     "source code and SDK material: headers, import libraries, source trees",
+    "examples":   "sample programs and worked examples, from any origin",
+    "re":         "reverse engineering: binaries with symbols, disassembly, decompiles, dumps",
+    "media":      "install and disc images, installed-system trees, VM images and templates",
+    "toolchains": "compilers, linkers and analysis tools kept for OS/2 work",
+    "notes":      "OS/2 knowledge a session established that is not published reference",
+    "state":      "the toolkit's own rebuildable state: indexes, caches, tool builds",
+}
+
+
+def cmd_where(a):
+    """Name the distinctions, and say where each one currently points."""
+    cats = [a.category] if a.category else CATEGORIES + [STATE]
+    root = library_root()
+    if not a.category:
+        print("library root: %s   (ITEM.md, symlinks and converted text live here)" % root)
+        print("material of each kind lives where the config says, or under the root:\n")
+    for c in cats:
+        home = category_home(c)
+        mark = "" if home == os.path.join(root, c) else "   <- set"
+        print("  %-11s %s%s" % (c, home, mark))
+        if not a.category:
+            print("  %-11s %s" % ("", CATEGORY_MEANS[c]))
 
 
 def cmd_ls(a):
@@ -785,10 +882,15 @@ def main(argv=None):
     s = sp.add_parser("init", help="create the library layout")
     s.add_argument("path", nargs="?"); s.add_argument("--save", action="store_true",
                    help="also record PATH as the library root in the config file")
+    s.add_argument("--home", action="append", metavar="CATEGORY=PATH",
+                   help="material of CATEGORY already lives at PATH (repeatable)")
     s.set_defaults(fn=cmd_init)
     s = sp.add_parser("ls", help="list items"); s.add_argument("category", nargs="?", choices=CATEGORIES)
     s.add_argument("--role"); s.set_defaults(fn=cmd_ls)
     sp.add_parser("roles", help="list roles and the items providing them").set_defaults(fn=cmd_roles)
+    s = sp.add_parser("where", help="where material of a category lives (and what each holds)")
+    s.add_argument("category", nargs="?", choices=CATEGORIES + [STATE])
+    s.set_defaults(fn=cmd_where)
     s = sp.add_parser("role", help="print the path of the item providing ROLE")
     s.add_argument("role"); s.add_argument("part", nargs="?"); s.add_argument("--all", action="store_true")
     s.set_defaults(fn=cmd_role)
