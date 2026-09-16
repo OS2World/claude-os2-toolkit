@@ -189,8 +189,9 @@ which a grep returning nothing cannot distinguish from "nobody has looked".
 If it does not answer, search the library itself with `os2-lib grep PATTERN`
 (provenance order, per-source counts, and a list of what it could not search),
 or re-run this command with `# know-miss` appended and it will proceed.
-Recording the miss is the point: it is the only honest signal of what the cache
-is still missing.
+The miss is the point: it shows up in this session's transcript, which is the
+only honest signal of what the cache still lacks. (This hook writes nothing -
+it is stateless; the escape is a marker, not a ledger entry.)
 
 If it DID answer and you are now checking that answer against the primary
 source, append `# know-verify` instead. Same effect here; it just keeps a
