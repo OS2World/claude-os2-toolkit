@@ -19,6 +19,19 @@ it talks to is resolved at run time, never edited into the script. Do not copy
 it into a project tree - a copy drifts, and the fix you make to one is invisible
 to the rest.
 
+## The tracker is not the code host
+
+Where a project's cards live and where its code lives are **independent facts**. A private Gitea
+tracker serving a repository published elsewhere is a normal arrangement: the issues stay private
+while the code is public. One project may keep code in svn and cards in Gitea; the next may push
+code to a public git host and still card in the same private Gitea; another may have no version
+control at all and still need a queue.
+
+So: **file cards where the project says**, which is `.os2track` in its root and the tracker line in
+its `CLAUDE.md`. Never infer the tracker from the code host, and never open an issue on a public
+code host for a project whose cards are private - that publishes the work item, and possibly its
+contents, to a different audience than the one it was written for.
+
 ## WORK STATE here; KNOWLEDGE in the cache
 
 This is the split that decides where a thing goes, and it is worth getting right

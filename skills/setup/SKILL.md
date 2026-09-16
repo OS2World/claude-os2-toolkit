@@ -51,6 +51,21 @@ Ask only what you need - and only what Step 1 did not already answer:
 3. **Test target?** An ArcaOS/OS-2 VM (recommended), or build-only for now (`sources.md` section 4).
 4. **Toolkit headers?** (`sources.md` section 1) - only ask if the library has no `toolkit-headers`.
    If they have them, ingest them; they are the verification substrate.
+5. **Where do its cards live?** A tracker is per project. If it is a Gitea instance, write
+   `.os2track` in the project root (`TRACK_URL`, `TRACK_REPO` - never a token) and the
+   `os2-toolkit:track` tool finds it from there or any subdirectory;
+   `recipes/setup-a-tracker.md` creates one that does not exist yet.
+6. **Where does its code live, and what does landing mean?** Ask separately, because it is a
+   separate fact. The cases seen in practice: **svn** to a server; **git with a remote** (a public
+   host, often, even when the tracker is private); **git, local only, no remote**; and **no version
+   control at all**, which is commoner than it sounds. Then ask what landing a change means here -
+   commit and push, commit only, or nothing to commit because the tree is unversioned - and whether
+   there are branch or message conventions.
+
+**Cards and code are independent.** A private tracker serving a public repository is a normal
+arrangement, not a contradiction: issues can be private while the code is not. Never infer one from
+the other, and never file a card on a code host's issue tracker unless that is what the project
+declared.
 
 ## Step 3 - Write the project's `CLAUDE.md`
 
@@ -73,6 +88,12 @@ PATH.
   project's own target VM details.
 - **Material:** "OS/2 books, headers and other material are in the OS/2 library: find them with
   `os2-lib role <role>`, search with `os2-lib grep`, never by a path."
+- **Cards:** where this project's tracker is, and that `.os2track` records it - or plainly that it
+  has none, so a session does not go looking.
+- **Code and landing:** the version control this project uses and what landing means (commit and
+  push / commit only / unversioned, so a change is just files on disk). Say it explicitly even when
+  the answer is "none": a session that assumes a repo exists will report work as landed when
+  nothing was recorded.
 - **Contributing:** "Findings that belong in the toolkit go through `os2-toolkit:contribute`."
 
 ## Migrating a project that used a copied kit
