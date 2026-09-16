@@ -1,0 +1,1875 @@
+#!/usr/bin/env python3
+"""know - a knowledge cache over the OS/2 library: what was established, what
+was searched for and NOT found, and a full-text index of the material itself.
+
+WHY THIS EXISTS. A session asks the same questions of the same few hundred
+megabytes of IBM and community material, from cold, every time -- and the
+expensive half of that work is never written down anywhere a later session can
+read. This store holds three things:
+
+    chunks    the ingested material, searchable by words rather than by the
+              exact token a grep would need;
+    facts     what a session established, each with a citation and a command
+              that re-checks it;
+    searches  what was looked for, where, and whether it was there -- INCLUDING
+              the negatives.
+
+THE NEGATIVES ARE THE PART A GREP CANNOT GIVE YOU. A grep that returns nothing
+cannot distinguish "this is not documented" from "nobody has ever looked".
+Recording "searched X, absent, stop looking" converts an open-ended search into
+a closed question, and it is expensive to produce and free to keep
+(CONTRIBUTING.md section 6: negative results are contributions).
+
+WHAT IT IS NOT. Not an authority, and not a replacement for reading the source.
+It is OURS: it holds what previous sessions concluded, and previous sessions
+were sometimes wrong.
+
+    RETRIEVAL TELLS YOU WHERE TO LOOK AND WHAT WAS CONCLUDED.
+    ANYTHING LOAD-BEARING IS RE-OPENED IN THE PRIMARY SOURCE BEFORE IT LANDS.
+
+FTS5 ONLY, DELIBERATELY. Measured over 33,384 real chunks of this kind of
+material: a porter-stemmed, heading-weighted FTS5 index scored 16/25 at k=5
+against a 768-dimension embedding hybrid's 14/25, at half the latency. It also
+always works -- FTS5 is compiled into the SQLite that ships with every stock
+Python, while an embedding column is silently model-versioned: written by a
+different model it does not fail, it returns wrong neighbours. That is the
+silent-wrong class, and it is invisible to any test that only asks whether a
+query returned something.
+
+STORE LOCATION, first hit wins:
+
+    $OS2_KNOW_DB  ->  ${XDG_DATA_HOME:-~/.local/share}/os2-toolkit/know.db
+
+It is deliberately NOT inside the OS/2 library. The chunks are re-ingestable --
+throw them away and `know ingest` rebuilds them from the material. The facts and
+the negative results are not: nothing regenerates them but the sessions that
+paid for them. So the store is not disposable, it must survive the library being
+moved, rebuilt or emptied, and it has to work on a machine with no library
+configured at all.
+
+Verbs (run with no arguments for the summary):
+    init                       create/upgrade the store
+    ingest [KIND] [PATH...]    index material; with no paths, from the library
+    q QUERY                    search facts + material, and report prior searches
+    add                        record a derived fact (citation REQUIRED)
+    absent                     record a negative result as a finding
+    show ID                    one fact (12) or negative (neg7) in full
+    log QUESTION               the search transcript for a question
+    supersede OLD BY -m WHY    correct a fact (12) or a negative (neg7)
+    promote ID --prov ...      raise a provenance tag (human/review only)
+    stale                      source files changed since ingest
+    refresh [--prune]          re-ingest what changed
+    verify [ID|--all]          re-run stored verify_cmd's; exit = DISAGREE count
+    export DIR                 readable prose + a LOSSLESS know.jsonl
+    import PATH                rebuild facts/searches from that jsonl
+    stats
+"""
+import argparse
+import hashlib
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+import time
+from html.parser import HTMLParser
+
+# tools/os2lib.py is a sibling: the library is found by role, never by a path
+# written into this file.
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+# SIX values, where the kit's reference corpus ratifies SEVEN tags. That is not
+# a drift to reconcile, and reconciling it is the hazard: the seventh is
+# `[unverified]`, which marks the ABSENCE of provenance on a CLAIM, inline in
+# prose. PROV is the closed set a stored RECORD may carry. Adding `unverified`
+# here would create a legal way to store an unverifiable fact - the one thing a
+# store that requires a citation and a re-runnable verify command exists to
+# prevent. os2ref/README.md explains the split from the other side; this note is
+# here because the wrong fix would be made at THIS site.
+PROV = ("DOC-IBM", "OBS-RE", "OBS", "OBS-USER", "INF", "DOC")
+
+# WHAT A VERIFICATION ACTUALLY ESTABLISHES. `verify_cmd` alone cannot tell
+# knowledge from circularity: a row can cite one of our own documents and
+# "verify" by grepping that same file - green forever, establishing nothing.
+# Our own notes are the SUBJECT of verification, never the authority. So a row
+# records what its command TOUCHED.
+CORROB = ("self", "re", "ibm-doc", "bytes", "measured", "two-source")
+CORROB_MEANS = {
+    "self":       "our own notes or code -- a pointer, not knowledge",
+    "re":         "a reverse-engineering write-up -- itself the SUBJECT too",
+    "ibm-doc":    "IBM book / DDK / Toolkit text",
+    "bytes":      "a shipped IBM binary, read by the command",
+    "measured":   "a capture from a running OS/2 machine",
+    "two-source": "bytes AND doc agree",
+}
+
+# TWO RULES ARE HARD, everything else is advisory. The split exists on two
+# reasons:
+#   * a tool that refuses legitimate work teaches you to route around it -- a
+#     guard that false-positives is worse than none;
+#   * provenance answers "how was this ORIGINALLY established" and corroboration
+#     answers "how is OUR row checkable now". They are orthogonal, and using the
+#     second to veto the first is the error an earlier full matrix made -- a
+#     fact established by disassembly has an RE origin even where our own
+#     checkability is weak.
+#
+# HARD RULE 1: a `self`-corroborated row can never be [DOC-IBM] or [OBS-RE].
+# That is the genuinely circular case -- cite one of our own documents, "verify"
+# by grepping that same document, green forever, establishing nothing.
+TAG_FORBIDS_SELF = {"DOC-IBM", "OBS-RE"}
+
+# HARD RULE 2 lives in cmd_promote: no machine raises a tag.
+
+# ADVISORY. An unusual pair is recorded with a warning, never refused: the
+# reader sees the corroboration on every hit, which is most of the value.
+#
+# The mapping mirrors the ratified tag definitions in os2ref/README.md:
+# [OBS-RE] is an INTERPRETATION of a binary (re-verified by reading the bytes
+# again), [OBS] is a CAPTURE from a running system (re-verified by running the
+# probe again). They fail differently, which is the only test a provenance tag
+# has to pass.
+#
+# ONE KNOWN EDGE the tool cannot resolve, so it warns rather than refuses: a
+# fact read out of the kernel debugger is [OBS-RE] by the ratified definition,
+# but its corroboration is a live capture -- indistinguishable here from a probe
+# result. [OBS-RE] + `measured` therefore warns and may still be correct. Read
+# the warning, do not silence it.
+TAG_EXPECTS = {
+    "DOC-IBM": {"ibm-doc", "two-source"},
+    "OBS-RE":  {"bytes", "two-source"},          # read out of a binary
+    "OBS":     {"measured", "self"},             # a capture, no interpretation
+    # Firsthand human observation with NO capture retained. `self` is the honest
+    # default -- it cannot be re-run, only corroborated. `measured` is also
+    # allowed and is the upgrade path: a probe written later can confirm the
+    # recollection without changing what the ORIGINAL observation was, so the
+    # tag stays [OBS-USER] while the corroboration strengthens.
+    "OBS-USER": {"self", "measured"},
+    "DOC":     {"ibm-doc", "re", "two-source"},
+    "INF":     set(CORROB),
+}
+KIND = ("contract", "layout", "behaviour", "procedure", "negative")
+
+# Where a search was actually run. `headers-source` and `library-docs` name what
+# the library holds; `bytes` and `decompile` name what an RE pass reads.
+TIER = ("ibm-primary", "library-docs", "headers-source", "re-corpus",
+        "decompile", "bytes", "other")
+
+# porter + heading/subject weighting measured better than a 768-dimension
+# embedding hybrid on this material; see the module docstring.
+TOKENIZE = "porter unicode61 remove_diacritics 2"
+
+
+DDL = f"""
+CREATE TABLE IF NOT EXISTS fact (
+    id            INTEGER PRIMARY KEY,
+    claim         TEXT NOT NULL,
+    subject       TEXT NOT NULL,
+    component     TEXT,
+    kind          TEXT NOT NULL,
+    provenance    TEXT NOT NULL,
+    citation      TEXT NOT NULL,     -- NOT NULL deliberately: a fact without a
+                                     -- checkable citation is a memory
+    verify_cmd    TEXT,
+    verify_cmd2   TEXT,   -- 'two-source' needs both to pass
+    build         TEXT,              -- which binary/kernel/fixpak the fact is
+                                     -- about: an offset is a fact about ONE
+                                     -- build, and a store that forgets which
+                                     -- one launders it into a fact about OS/2
+    derived_at    INTEGER NOT NULL,
+    derived_by    TEXT,
+    corroboration TEXT NOT NULL DEFAULT 'self',   -- see CORROB / TAG_EXPECTS
+    superseded_by INTEGER REFERENCES fact(id)
+);
+CREATE INDEX IF NOT EXISTS fact_subject ON fact(subject);
+CREATE INDEX IF NOT EXISTS fact_component ON fact(component);
+
+CREATE TABLE IF NOT EXISTS search (
+    id        INTEGER PRIMARY KEY,
+    question  TEXT NOT NULL,
+    tier      TEXT NOT NULL,
+    target    TEXT NOT NULL,
+    verdict   TEXT NOT NULL,         -- hit | absent | partial
+    result     TEXT,
+    fact_id    INTEGER REFERENCES fact(id),
+    verify_cmd TEXT,   -- the command that found nothing. A stale `absent` is
+                       -- the dangerous row: a negative is recorded here as a
+                       -- FINDING, so a wrong one closes a question permanently.
+    -- Correction for the NEGATIVE half of the store, and it is the half that
+    -- needs it MORE. While this column did not exist, `supersede` parsed both
+    -- arguments as fact ids, so the record type whose wrongness closes a
+    -- question PERMANENTLY was the one with no correction path: a mis-recorded
+    -- `absent` stayed CONTRADICTED in every future sweep, and the row whose
+    -- whole value is "this needs a human" became the row everyone learns to
+    -- skip. The superseded row is KEPT, with its text AND its wrong verify_cmd
+    -- -- the bad command is the instructive part (a `grep -c` COUNTS, and a
+    -- negative's verify must be a search that FINDS NOTHING).
+    superseded_by INTEGER REFERENCES search(id),
+    ts        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS search_question ON search(question);
+
+CREATE TABLE IF NOT EXISTS chunk (
+    id        INTEGER PRIMARY KEY,
+    corpus    TEXT NOT NULL,
+    path      TEXT NOT NULL,         -- ABSOLUTE. The library is machine-local,
+                                     -- and a relative path means a chunk's
+                                     -- staleness depends on which directory the
+                                     -- tool was run from.
+    sha       TEXT NOT NULL,         -- of the WHOLE source file; a chunk whose
+                                     -- file no longer hashes to this is stale
+    section   INTEGER NOT NULL,
+    heading   TEXT,
+    body      TEXT NOT NULL,
+    size      INTEGER,           -- stat() of the source at ingest: a cheap
+    mtime     INTEGER,           -- staleness pre-check, sha only on a miss
+    UNIQUE(path, section)
+);
+CREATE INDEX IF NOT EXISTS chunk_corpus ON chunk(corpus);
+
+-- FTS kept in sync BY TRIGGER, never by writer-side pushes: one forgotten push
+-- is a row invisible to search forever, which is the silent-empty class.
+CREATE VIRTUAL TABLE IF NOT EXISTS fact_fts USING fts5(
+    subject, claim, content='fact', content_rowid='id', tokenize='{TOKENIZE}');
+CREATE TRIGGER IF NOT EXISTS fact_ai AFTER INSERT ON fact BEGIN
+    INSERT INTO fact_fts(rowid, subject, claim) VALUES (new.id, new.subject, new.claim);
+END;
+CREATE TRIGGER IF NOT EXISTS fact_ad AFTER DELETE ON fact BEGIN
+    INSERT INTO fact_fts(fact_fts, rowid, subject, claim)
+        VALUES ('delete', old.id, old.subject, old.claim);
+END;
+CREATE TRIGGER IF NOT EXISTS fact_au AFTER UPDATE OF subject, claim ON fact BEGIN
+    INSERT INTO fact_fts(fact_fts, rowid, subject, claim)
+        VALUES ('delete', old.id, old.subject, old.claim);
+    INSERT INTO fact_fts(rowid, subject, claim) VALUES (new.id, new.subject, new.claim);
+END;
+
+CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(
+    heading, body, content='chunk', content_rowid='id', tokenize='{TOKENIZE}');
+CREATE TRIGGER IF NOT EXISTS chunk_ai AFTER INSERT ON chunk BEGIN
+    INSERT INTO chunk_fts(rowid, heading, body) VALUES (new.id, new.heading, new.body);
+END;
+CREATE TRIGGER IF NOT EXISTS chunk_ad AFTER DELETE ON chunk BEGIN
+    INSERT INTO chunk_fts(chunk_fts, rowid, heading, body)
+        VALUES ('delete', old.id, old.heading, old.body);
+END;
+"""
+
+
+# ----------------------------------------------------------- store location
+
+def db_path():
+    """$OS2_KNOW_DB -> ${XDG_DATA_HOME:-~/.local/share}/os2-toolkit/know.db.
+
+    Outside the library on purpose -- see the module docstring: chunks are
+    re-ingestable, facts and negative results are not.
+    """
+    v = os.environ.get("OS2_KNOW_DB")
+    if v:
+        return os.path.abspath(os.path.expanduser(v))
+    base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    return os.path.join(base, "os2-toolkit", "know.db")
+
+
+_MIGRATIONS = [
+    ("fact",   "corroboration", "TEXT NOT NULL DEFAULT 'self'"),
+    ("fact",   "verify_cmd2",   "TEXT"),
+    ("search", "verify_cmd",    "TEXT"),
+    ("search", "superseded_by", "INTEGER REFERENCES search(id)"),
+    ("chunk",  "size",          "INTEGER"),
+    ("chunk",  "mtime",         "INTEGER"),
+]
+
+
+def migrate(conn):
+    """Idempotent ADD COLUMN for stores created before a column existed. The
+    DDL uses CREATE TABLE IF NOT EXISTS, which silently does nothing to an
+    existing table -- so without this a schema change is invisible until a
+    query fails."""
+    for table, col, decl in _MIGRATIONS:
+        try:
+            cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        except sqlite3.OperationalError:
+            continue                       # table not created yet
+        if cols and col not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+    conn.commit()
+
+
+def connect(create=False):
+    p = db_path()
+    if not os.path.exists(p):
+        if not create:
+            die(f"no store at {p}\n"
+                f"       run `know init`, or point $OS2_KNOW_DB at an existing store")
+        d = os.path.dirname(p)
+        if d:
+            os.makedirs(d, exist_ok=True)
+    c = sqlite3.connect(p)
+    c.row_factory = sqlite3.Row
+    migrate(c)
+    try:
+        c.execute("SELECT 1 FROM fact_fts LIMIT 1").fetchone()
+    except sqlite3.OperationalError:
+        if not create:
+            die("FTS index missing or unusable -- the store is damaged.\n"
+                "       Rebuild: know init")
+    return c
+
+
+def die(msg, code=2):
+    print(f"know: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+# ------------------------------------------------------------------ chunkers
+
+MAX_CHUNK, MIN_CHUNK = 6000, 120
+
+
+def _postprocess(chunks):
+    """Enforce MAX_CHUNK/MIN_CHUNK. Measured on a real markdown corpus: a bare
+    `##` split leaves 49 chunks over 12 KB and one at 213 KB, so a size cap is
+    not optional. The overlap of one paragraph at each seam is what stops a
+    declaration or a sentence being lost between two chunks."""
+    out = []
+    for heading, body in chunks:
+        body = body.strip("\n")
+        if not body.strip():
+            continue
+        if len(body) <= MAX_CHUNK:
+            out.append((heading, body))
+            continue
+        cur, n, part = [], 0, 1
+        for para in body.split("\n\n"):
+            if n + len(para) > MAX_CHUNK and cur:
+                out.append(((heading or "") + f" [{part}]", "\n\n".join(cur)))
+                part += 1
+                cur = [cur[-1]] if len(cur) > 1 else []   # one-para overlap
+                n = sum(len(x) for x in cur)
+            cur.append(para)
+            n += len(para)
+        if cur:
+            out.append(((heading or "") + f" [{part}]", "\n\n".join(cur)))
+    merged, carry = [], None
+    for heading, body in out:
+        if carry:
+            heading, body, carry = carry[0] or heading, carry[1] + "\n\n" + body, None
+        if len(body) < MIN_CHUNK:
+            carry = (heading, body)
+            continue
+        merged.append((heading, body))
+    if carry:
+        if merged:
+            merged[-1] = (merged[-1][0], merged[-1][1] + "\n\n" + carry[1])
+        else:
+            merged.append(carry)
+    return merged
+
+
+def chunk_inf(text):
+    """INF-book text as `inf2txt.sh` writes it: sections are '=== Heading ==='.
+
+    This is the material that chunks best with no tuning at all: each API's
+    syntax and each parameter land as their own section, which is exactly the
+    granularity a question is asked at."""
+    parts = re.split(r"(?m)^=== (.*?) ===$\n?", text)
+    out = [(None, parts[0])] if parts and parts[0].strip() else []
+    for i in range(1, len(parts) - 1, 2):
+        out.append((parts[i].strip(), parts[i + 1]))
+    return _postprocess(out)
+
+
+def chunk_md(text):
+    parts = re.split(r"(?m)^(#{2,3}) (.*)$\n?", text)
+    out = [(None, parts[0])] if parts and parts[0].strip() else []
+    for i in range(1, len(parts) - 2, 3):
+        out.append((parts[i + 1].strip(), parts[i + 2]))
+    return _postprocess(out)
+
+
+_RB = re.compile(r"(?m)^\s{0,4}((?:\d+\.)*\d+)\s+([A-Z][^\n]{2,70})$")
+
+
+def chunk_redbook(text):
+    """Plain book text: numbered headings. Falls back to fixed windows where
+    scanning or OCR left none -- a silent zero-chunk result is not acceptable,
+    because it is indistinguishable from material that says nothing."""
+    marks = [(m.start(), f"{m.group(1)} {m.group(2).strip()}") for m in _RB.finditer(text)]
+    if len(marks) < 5:
+        return _postprocess([(None, text[i:i + 3400]) for i in range(0, len(text), 3000)])
+    out = [(None, text[:marks[0][0]])] if marks[0][0] else []
+    for i, (pos, head) in enumerate(marks):
+        end = marks[i + 1][0] if i + 1 < len(marks) else len(text)
+        out.append((head, text[pos:end]))
+    return _postprocess(out)
+
+
+# A named declaration at column 0: what a reader greps a header FOR.
+_DECL = re.compile(
+    r"(?m)^\s{0,2}(?:"
+    r"#define\s+(?P<d>[A-Za-z_][A-Za-z0-9_]*)"
+    r"|(?:typedef\s+)?(?:struct|union|enum)\s+(?P<s>[A-Za-z_][A-Za-z0-9_]*)"
+    r"|(?P<a>[A-Za-z_][A-Za-z0-9_]*)\s+(?:STRUC|EQU|PROC|MACRO|SEGMENT)\b"
+    r"|[A-Za-z_][A-Za-z0-9_ \t*]*?(?P<f>[A-Za-z_][A-Za-z0-9_]*)\s*\([^;{]*\)\s*[;{]"
+    r")")
+
+
+def chunk_source(text):
+    """C/asm headers and driver source.
+
+    Fixed windows, NOT declaration boundaries. A header is not a document and
+    has no reliable section structure: `#define` runs, struct bodies, prototype
+    blocks and 200-line comment banners all interleave, and every boundary rule
+    tried on real IBM headers either split a struct across two chunks or
+    swallowed a whole file into one. Windows with overlap cannot lose a
+    declaration at a seam, which is the only failure that matters here --
+    retrieval is FTS, so what a chunk needs is to CONTAIN the terms, not to
+    start in the right place.
+
+    The heading is the first named declaration in the window, because that is
+    what makes a hit legible in a result list ("bsedos.h sec. DosQFileMode"
+    beats "bsedos.h chunk 47"). It is a label, not a claim about the chunk's
+    extent."""
+    out, step, win = [], 2400, 2800
+    for i in range(0, max(len(text), 1), step):
+        body = text[i:i + win]
+        if not body.strip():
+            continue
+        m = _DECL.search(body)
+        head = None
+        if m:
+            head = m.group("d") or m.group("s") or m.group("a") or m.group("f")
+        out.append((head, body))
+    return _postprocess(out)
+
+
+class _HtmlText(HTMLParser):
+    """Visible text of one HTML book page or article, split at its headings.
+
+    IBM's HTML reference books are one ARTICLE per page: the <title> and a
+    leading <h2> carry the book name, one <h3> carries the article title, and
+    the body is <p>/<br>/<pre>/<ul> with much of the punctuation as numeric
+    entities. Some books are not paginated that way and put a whole manual in
+    one file with many <h2>/<h3> -- so headings of any level open a new section,
+    and a page with none is one section titled by its <title>. Text inside <pre>
+    keeps its line structure (that is where the tables are); everything else has
+    whitespace collapsed. Wiki and blog mirrors chunk acceptably under the same
+    rules, which is why they share this chunker."""
+    BLOCK = {"p", "br", "li", "hr", "ul", "ol", "dl", "dt", "dd", "tr", "table",
+             "div", "blockquote"}
+    HEAD = {"h1", "h2", "h3", "h4"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.title, self.sections = "", [[None, []]]
+        self._in_title = self._in_head = self._skip = False
+        self._pre = 0
+        self._cur = None          # heading text being collected
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "title":
+            self._in_title = True
+        elif tag in ("script", "style"):
+            self._skip = True
+        elif tag in self.HEAD:
+            self._in_head, self._cur = True, []
+        elif tag == "pre":
+            self._pre += 1
+            self.sections[-1][1].append("\n")
+        elif tag in self.BLOCK:
+            self.sections[-1][1].append("\n\n" if tag == "p" else "\n")
+
+    def handle_endtag(self, tag):
+        if tag == "title":
+            self._in_title = False
+        elif tag in ("script", "style"):
+            self._skip = False
+        elif tag in self.HEAD and self._in_head:
+            self._in_head = False
+            self.sections.append([" ".join("".join(self._cur).split()), []])
+        elif tag == "pre":
+            self._pre = max(0, self._pre - 1)
+            self.sections[-1][1].append("\n")
+        elif tag in self.BLOCK:
+            self.sections[-1][1].append("\n")
+
+    def handle_data(self, data):
+        if self._skip:
+            return
+        if self._in_title:
+            self.title += data
+        elif self._in_head:
+            self._cur.append(data)
+        else:
+            self.sections[-1][1].append(
+                data if self._pre
+                else " ".join(data.split()) + " " if data.strip() else " ")
+
+
+_NAV = re.compile(r"(?m)^\s*(?:\[[^\]\n]{1,40}\]\s*){1,6}$\n?")   # [prev][next][TOC]
+
+
+def chunk_html(text):
+    """One HTML page -> (heading, body) sections; see _HtmlText."""
+    p = _HtmlText()
+    try:
+        p.feed(text)
+        p.close()
+    except Exception:            # a truncated or non-HTML file still yields text
+        pass
+    title = " ".join(p.title.split())
+    out = []
+    for heading, parts in p.sections:
+        body = _NAV.sub("", "".join(parts))
+        body = re.sub(r"[ \t]+\n", "\n", body)
+        body = re.sub(r"\n{3,}", "\n\n", body).strip()
+        if not body:
+            continue
+        # the book-name <h2> and the <title> repeat on every page; neither is
+        # an article title, so a section headed by them keeps the page <title>
+        out.append((heading if heading and heading != title else title or None, body))
+    return _postprocess(out)
+
+
+CHUNKERS = {"inf": chunk_inf, "md": chunk_md, "redbook": chunk_redbook,
+            "source": chunk_source, "html": chunk_html}
+
+
+# ------------------------------------------------- what the library offers
+
+# Extension -> chunker kind. A `.txt` file is decided by looking INSIDE it (see
+# _sniff_text): inf2txt output carries its own section markers, and chunking it
+# as flat book text would throw away the one structure this material has.
+# Anything not listed is skipped -- images, archives, .map/.json and the rest
+# are not prose and would only dilute the index.
+_EXT_KIND = {
+    ".htm": "html", ".html": "html",
+    ".md": "md",
+    ".txt": None,          # sniffed
+    ".h": "source", ".hpp": "source", ".inc": "source", ".c": "source",
+    ".cpp": "source", ".asm": "source", ".def": "source", ".idl": "source",
+    ".rc": "source", ".dlg": "source", ".cmd": "source", ".rex": "source",
+}
+
+_INF_MARK = re.compile(r"(?m)^=== .+ ===$")
+
+
+def _sniff_text(path):
+    """`inf` when the file carries inf2txt's own section markers, else
+    `redbook` -- whose chunker falls back to fixed windows, so it is the safe
+    default for prose with no structure to find."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            head = f.read(65536)
+    except OSError:
+        return None
+    return "inf" if _INF_MARK.search(head) else "redbook"
+
+
+def _load_os2lib():
+    try:
+        import os2lib
+    except ImportError as e:
+        die(f"cannot import os2lib ({e}).\n"
+            f"       `know ingest` with no PATH reads the OS/2 library, and\n"
+            f"       tools/os2lib.py must sit beside this tool. Pass explicit\n"
+            f"       paths to ingest without it.")
+    return os2lib
+
+
+def _item_roots(os2lib, it):
+    """(path, dir?) roots of one item, agreeing with what `os2-lib grep` reads.
+
+    Uses os2lib's own resolver when it is available so the two tools never
+    disagree about what an item contains; the fallback below is the same rule
+    stated coarsely (derived text/ and tree/, plus the original for link,
+    convert and import modes), minus the part_of exclusion."""
+    fn = getattr(os2lib, "_search_roots", None)
+    if fn is not None:
+        return [p for p, _filtered in fn(it)]
+    roots = []
+    mode = it.get("search", "both")
+    if mode in ("text", "both"):
+        for sub in ("text", "tree"):
+            p = os.path.join(it.dir, sub)
+            if os.path.isdir(p):
+                roots.append(p)
+    if mode in ("original", "both") and it.get("mode") in ("link", "convert", "import"):
+        o = it.original()
+        if o and os.path.exists(o):
+            roots.append(o)
+    return roots
+
+
+def library_sources(category=None, role_name=None, slug=None, want_kind=None):
+    """[(path, kind, item)] for everything in the library worth indexing.
+
+    THE MAPPING, and it is stated here rather than guessed per file:
+      * every item's derived `text/` and extracted `tree/`, and the original it
+        links to, are candidates -- the same roots `os2-lib grep` searches, so a
+        question answered by one is answerable by the other;
+      * items whose kind is not text at all (binaries, disc and VM images,
+        dumps, installed system trees, toolchains) are skipped, because indexing
+        them buys nothing and costs the whole index's precision;
+      * each candidate FILE gets its chunker from its extension -- headers and
+        source trees become kind `source`, HTML books and article mirrors become
+        `html`, markdown becomes `md`, and a `.txt` is read to decide whether it
+        is converted INF text or flat book text.
+
+    Nothing here invents a path: every root comes from an item's own ITEM.md.
+    """
+    os2lib = _load_os2lib()
+    root = os2lib.library_root()
+    if not os.path.isdir(root):
+        die(f"no OS/2 library at {root}\n"
+            f"       Nothing to ingest, and this tool will not go looking for\n"
+            f"       material elsewhere on the disk. Tell Claude what OS/2\n"
+            f"       material you have and where; the os2-toolkit:ingest skill\n"
+            f"       files it into the library (PATHS.md), and `os2-lib init`\n"
+            f"       creates the library itself.")
+    opaque = getattr(os2lib, "OPAQUE_KINDS", set())
+    items, broken = [], []
+    for it in os2lib.iter_items(root=root, category=category):
+        if it.error:
+            broken.append(f"{it.slug} ({it.error})")
+            continue
+        if slug and it.slug != slug:
+            continue
+        if role_name and role_name not in it.provides:
+            continue
+        if not role_name and it.get("kind") in opaque:
+            continue
+        items.append(it)
+    if not items:
+        what = ", ".join(x for x in (
+            f"category {category}" if category else "",
+            f"role {role_name}" if role_name else "",
+            f"item {slug}" if slug else "") if x) or "any text material"
+        die(f"the OS/2 library at {root} offers nothing matching: {what}\n"
+            + (f"       (unreadable ITEM.md: {'; '.join(broken)})\n" if broken else "")
+            + f"       `os2-lib ls` lists what is there and `os2-lib roles` what\n"
+            f"       it provides. To add material, tell Claude where it is --\n"
+            f"       the os2-toolkit:ingest skill files it (PATHS.md).")
+    out, seen, unusable = [], set(), []
+    for it in items:
+        roots = _item_roots(os2lib, it)
+        if not roots:
+            why = ("original missing" if not it.available()
+                   else "no text/ or tree/ -- not converted yet")
+            unusable.append(f"{it.slug} ({why})")
+            continue
+        n0 = len(out)
+        for r in roots:
+            for path in _walk_text(r):
+                rp = os.path.realpath(path)
+                if rp in seen:
+                    continue            # one file, one chunk set, whichever
+                seen.add(rp)            # item reaches it first
+                kind = _EXT_KIND.get(os.path.splitext(path)[1].lower(), "?")
+                if kind == "?":
+                    continue
+                if kind is None:
+                    kind = _sniff_text(path)
+                if kind is None or (want_kind and kind != want_kind):
+                    continue
+                out.append((path, kind, it))
+        if len(out) == n0:
+            unusable.append(f"{it.slug} (no indexable files under its roots)")
+    if not out:
+        die("the OS/2 library holds items, but none of them offers text this "
+            "tool can index.\n"
+            + (f"       skipped: {'; '.join(unusable)}\n" if unusable else "")
+            + "       Material that is not greppable as it stands (INF, PDF, an\n"
+              "       archive) needs converting first: `os2-lib convert <slug>`,\n"
+              "       or ask Claude to run the os2-toolkit:ingest skill.")
+    if unusable:
+        print("note: skipped " + "; ".join(unusable), file=sys.stderr)
+    return out
+
+
+def _walk_text(root):
+    if os.path.isfile(root):
+        yield root
+        return
+    for base, dirs, files in os.walk(root, followlinks=True):
+        dirs[:] = [d for d in sorted(dirs) if not d.startswith(".")]
+        for f in sorted(files):
+            if os.path.splitext(f)[1].lower() in _EXT_KIND:
+                yield os.path.join(base, f)
+
+
+# -------------------------------------------------------------- staleness
+
+def stale_paths(conn):
+    """(changed, missing) source files. A chunk whose file no longer contains
+    its text is the worst thing a CITATION store can do, so this is checked
+    rather than hoped for.
+
+    Cheap first: stat() every distinct path and hash only the ones whose size or
+    mtime moved -- an mtime that moved with identical content (a touch, a
+    re-extraction, a restored backup) is NOT stale, and re-hashing settles it."""
+    changed, missing, restamp = [], [], []
+    rows = conn.execute("SELECT path, corpus, sha, size, mtime, COUNT(*) n "
+                        "FROM chunk GROUP BY path").fetchall()
+    for r in rows:
+        try:
+            st = os.stat(r["path"])
+        except OSError:
+            missing.append((r["path"], r["corpus"], r["n"]))
+            continue
+        if r["size"] is not None and r["mtime"] is not None \
+           and int(st.st_size) == r["size"] and int(st.st_mtime) == r["mtime"]:
+            continue                               # unchanged, no hash needed
+        try:
+            text = open(r["path"], encoding="utf-8", errors="replace").read()
+        except OSError:
+            missing.append((r["path"], r["corpus"], r["n"]))
+            continue
+        if hashlib.sha256(text.encode()).hexdigest()[:16] != r["sha"]:
+            changed.append((r["path"], r["corpus"], r["n"]))
+        else:
+            restamp.append((int(st.st_size), int(st.st_mtime), r["path"]))
+    # ONE commit for the whole pass. An earlier version committed PER FILE, and
+    # on a store whose paths had all been re-stamped that meant thousands of
+    # fsync'd commits behind a single `know q`: measured at over two minutes,
+    # against 0.35 s with the staleness check skipped. A killed run kept only
+    # the rows already committed, so each attempt healed a fraction and the
+    # "~60 ms" claim held for nobody until one pass ran to completion.
+    if restamp:
+        conn.executemany("UPDATE chunk SET size=?, mtime=? WHERE path=?", restamp)
+        conn.commit()
+    return changed, missing
+
+
+def stale_set(conn):
+    """Paths whose chunks must not be trusted (changed only -- a MISSING file is
+    usually an unmounted disk holding part of the library, not a wrong
+    answer)."""
+    changed, _ = stale_paths(conn)
+    return {p for p, _, _ in changed}
+
+
+# --------------------------------------------------------------- retrieval
+
+def fts_query(q):
+    toks = [t for t in re.findall(r"[A-Za-z0-9_$#.]+", q) if len(t) > 1]
+    return " OR ".join(f'"{t}"' for t in toks)
+
+
+FACT_CAP = 3
+
+# Function and question words only. Domain verbs a query legitimately shares
+# with a subject (read, write, set, open, lock, wait) are deliberately NOT here.
+_SUBJECT_STOP = frozenset("""
+a an the and or not no nor but of to in on at by for from with as into onto
+than then there their them they this that these those it its is are was were
+be been being do does did done has have had having can could should would will
+may might must shall how what which when where who whom whose why whether if
+so up out about over under between through during before after above below
+one two any all some each every both either neither such same other another
+own very just also only ever never we you i he she me my our your his her
+""".split())
+
+
+def _subject_query(q):
+    """The FTS5 query used to decide whether a fact is ABOUT the question: the
+    question's tokens minus stopwords and 1-2 letter fragments, ORed. Empty when
+    nothing distinctive is left, and then nothing is promoted."""
+    toks = [t for t in re.findall(r"[A-Za-z0-9_$#.]+", q)
+            if len(t) > 2 and t.lower() not in _SUBJECT_STOP]
+    return " OR ".join(f'"{t}"' for t in toks)
+
+
+def search(conn, query, limit=20, corpus=None, component=None, facts_only=False):
+    fq = fts_query(query)
+    if not fq:
+        return []
+    hits = []
+    sql = ("SELECT f.id, f.subject, f.claim, f.citation, f.provenance, f.kind, "
+           "f.corroboration, f.superseded_by, bm25(fact_fts, 5.0, 1.0) r FROM fact_fts "
+           "JOIN fact f ON f.id = fact_fts.rowid WHERE fact_fts MATCH ?")
+    p = [fq]
+    if component:
+        sql += " AND f.component = ?"
+        p.append(component)
+    sql += " ORDER BY r LIMIT ?"
+    p.append(limit)
+    for r in conn.execute(sql, p):
+        hits.append({"what": "fact", "id": r["id"], "score": -r["r"],
+                     "title": r["subject"], "text": r["claim"],
+                     "cite": r["citation"], "prov": r["provenance"],
+                     "corrob": r["corroboration"],
+                     "superseded_by": r["superseded_by"]})
+    if not facts_only:
+        sql = ("SELECT c.id, c.path, c.heading, c.body, bm25(chunk_fts, 5.0, 1.0) r "
+               "FROM chunk_fts JOIN chunk c ON c.id = chunk_fts.rowid "
+               "WHERE chunk_fts MATCH ?")
+        p = [fq]
+        if corpus:
+            sql += " AND c.corpus = ?"
+            p.append(corpus)
+        sql += " ORDER BY r LIMIT ?"
+        p.append(limit)
+        for r in conn.execute(sql, p):
+            hits.append({"what": "chunk", "id": r["id"], "score": -r["r"],
+                         "title": r["heading"] or "", "text": r["body"],
+                         "cite": r["path"], "prov": None, "corrob": None,
+                         "superseded_by": None})
+    # RANKING. bm25 scores from two FTS indexes over two corpora are NOT on a
+    # comparable scale, so they are never blended. A curated fact is promoted
+    # above the material only when the query matched its SUBJECT - i.e. the
+    # query is about the thing the fact is about. Everything else is ordered
+    # within its own group, facts last.
+    #
+    # Two weaker rules were tried and MEASURED against a 56-question answer set,
+    # and both degrade as the curated set grows, which is the worst possible
+    # shape for a store meant to accumulate:
+    #   * facts first, unconditionally  -> recall@1 22/56 -> 6/56 with TWO facts
+    #     in the store, both matching many queries weakly on a common word;
+    #   * min-max normalise each group  -> 19/56, because normalising a
+    #     two-element group forces its best member to 1.0 regardless of how
+    #     weakly it actually matched.
+    # The subject test was then tuned at TWO facts, and at 96 it failed the same
+    # way: `fts_query` ORing every token of the question -- "how", "the", "from"
+    # -- against subjects that are often whole sentences made 55 of 56 questions
+    # "match" a median of 17 fact subjects, so the top seventeen slots were facts
+    # and recall@1 read 0/56 with facts present against 16/56 without. Two
+    # changes, neither tuned to the answer set:
+    #   1. the SUBJECT test ignores stopwords and 1-2 letter tokens -- a fact is
+    #      about the query's NOUNS, not its grammar;
+    #   2. at most FACT_CAP facts sit above the material, best first; the rest go
+    #      after it. A store meant to accumulate must not be able to push the
+    #      material off the page by growing.
+    strong = set()
+    sq = _subject_query(query)
+    if sq:
+        try:
+            for r in conn.execute(
+                    "SELECT rowid FROM fact_fts WHERE fact_fts MATCH ? LIMIT ?",
+                    ("subject : (" + sq + ")", limit)):
+                strong.add(r["rowid"])
+        except sqlite3.OperationalError:
+            pass                      # a column filter is a nicety, not a gate
+    promoted = sorted((h for h in hits if h["what"] == "fact" and h["id"] in strong),
+                      key=lambda h: -h["score"])[:FACT_CAP]
+    top = {h["id"] for h in promoted}
+
+    def key(h):
+        if h["what"] == "fact":
+            return (0 if h["id"] in top else 2, -h["score"])
+        return (1, -h["score"])
+    hits.sort(key=key)
+    return hits[:limit]
+
+
+# ----------------------------------------------------------------- commands
+
+def cmd_init(a):
+    c = connect(create=True)
+    c.executescript(DDL)
+    c.commit()
+    print(f"store ready: {db_path()}")
+
+
+def check_tag(prov, corrob, verify=None, verify2=None):
+    """Hard-refuse only the circular case; warn on anything else unusual."""
+    if corrob == "self" and prov in TAG_FORBIDS_SELF:
+        die(f"[{prov}] cannot rest on corroboration 'self'.\n"
+            f"       'self' means: {CORROB_MEANS['self']}\n"
+            f"       Citing one of our own notes and verifying by grepping that\n"
+            f"       same file establishes nothing -- our notes are the SUBJECT\n"
+            f"       of verification, never the authority.\n"
+            f"       Cite IBM text, a binary, or a capture -- or use [INF]/[OBS].")
+    if corrob == "two-source" and not (verify and verify2):
+        die("corroboration 'two-source' needs BOTH --verify and --verify2.\n"
+            "       It is the strongest tier; an unverifiable strongest tier is\n"
+            "       decoration, and this store's whole argument is that it is\n"
+            "       not a memory. Give the command that reads the BYTES and the\n"
+            "       one that reads the DOC.")
+    if corrob not in TAG_EXPECTS[prov]:
+        print(f"note: [{prov}] with corroboration '{corrob}' is unusual.\n"
+              f"      '{corrob}' means: {CORROB_MEANS[corrob]}\n"
+              f"      [{prov}] usually rests on: "
+              f"{', '.join(sorted(TAG_EXPECTS[prov]))}\n"
+              f"      Recorded as given. If this is load-bearing, re-derive it\n"
+              f"      from a primary source before anything lands on it."
+              + ("\n      (A KERNEL-DEBUGGER reading is legitimately "
+                 "[OBS-RE]+measured;\n       a probe result on real OS/2 is "
+                 "[OBS]. The tool cannot tell\n       them apart -- you can.)"
+                 if prov == "OBS-RE" and corrob == "measured" else ""),
+              file=sys.stderr)
+
+
+# ------------------------------------------------------------ citation rules
+#
+# A FACT here is about OS/2, and its citation has to name something the next
+# reader can open. That is the whole difference between knowledge and a memory:
+# an unsourced value is dangerous because it is UNFALSIFIABLE -- you can re-read
+# a header and re-run a probe, but you cannot re-run anyone's recollection.
+#
+# So a citation must name ONE of four things, and the shapes below are what the
+# tool recognises:
+#
+#   1. LIBRARY MATERIAL, by role or by item -- `os2-lib role toolkit-headers
+#      headers`, `docs/ibm-os2-toolkit-4.5-books/text/pm2.txt`. A role survives
+#      the material moving; a machine path does not.
+#   2. AN IBM BOOK PLUS A TOPIC -- pm2.txt "WinLoadString - Syntax". The book
+#      alone is not a citation: these books are thousands of panels, and "it is
+#      in pm2" is not something a reader can check.
+#   3. A file:line IN HEADERS OR SOURCE -- bsedos.h:2616, kbdscan.asm:114.
+#   4. A BINARY AND AN OFFSET, for anything read out of one -- PMMERGE.DLL
+#      obj3+0x1e8c. Per-build by nature, which is what the `build` column is
+#      for.
+#
+# What is REFUSED, loudly: a citation pointing into a project's own source tree.
+# Your code is the SUBJECT being validated, never the authority for what OS/2
+# does, and a row keyed to a tree that changes every day is stale on arrival.
+# Note the character class excludes DIGITS as well as letters and `/`: with
+# `[^A-Za-z/]` a path like `~/os2docs/inf_text` matched, because the `2` before
+# `docs/` counted as a boundary.
+_PROJECT_CITE = re.compile(
+    r"(^|[^A-Za-z0-9/])(src|lib|tests?|build|obj|include)/")
+
+# A citation says what establishes the fact AND, often, how it was read:
+#   "DOSCALL1.DLL obj4+0x0fd4 (retf 4, read with lx_disasm.py)"
+# The parenthesis is method, not source, and the rule is explicitly that how you
+# re-read a source is not the source -- so parenthesised spans are dropped
+# before matching, in both directions.
+_PARENS = re.compile(r"\([^()]*\)")
+
+_CITE_OK = (
+    # a role, or an item path/slug under a library category
+    re.compile(r"\bos2-lib\s+(role|path)\b"),
+    re.compile(r"(^|[^A-Za-z0-9/])(docs|source|examples|re|media|toolchains|notes)/"
+               r"[a-z0-9][a-z0-9.\-]*"),
+    # file:line in a header, source file, book text or reference doc
+    re.compile(r"[\w.+-]+\.(h|hpp|inc|c|cpp|asm|def|idl|rc|dlg|txt|md|htm|html)"
+               r"\s*:\s*\d+", re.I),
+    # a book (or page) plus a named topic
+    re.compile(r"[\w.+-]+\.(txt|htm|html|inf)\b[^\n]*[\"'][^\"']{3,}[\"']", re.I),
+    re.compile(r"[\w.+-]+\.(txt|htm|html|inf)\b\s*(sec\.|section|topic|panel)\s+\S",
+               re.I),
+    # a shipped binary and an offset
+    re.compile(r"[\w.+-]+\.(dll|exe|sys|drv|ifs|add|flt|dmd|snp)\b[^\n]*"
+               r"(obj\s*\d+|\+\s*0x[0-9a-f]+|0x[0-9a-f]{4,})", re.I),
+    # an ordinal in a named module
+    re.compile(r"[\w.+-]+\.(dll|exe|sys)\s*#\s*\d+", re.I),
+)
+
+_CITE_HELP = (
+    "       A citation must name something the next reader can OPEN:\n"
+    "         * library material by role or item path --\n"
+    "           `os2-lib role toolkit-headers headers`, or\n"
+    "           docs/<item-slug>/text/<book>.txt\n"
+    "         * an IBM book AND a topic -- pm2.txt \"WinLoadString - Syntax\"\n"
+    "           (the book alone is not checkable; these are thousands of panels)\n"
+    "         * a file:line in headers or source -- bsedos.h:2616\n"
+    "         * a binary and an offset -- PMMERGE.DLL obj3+0x1e8c\n"
+    "       How you re-read a source is not the source: a tool invocation in\n"
+    "       parentheses is fine, and so is a verify_cmd that runs one.")
+
+
+def _reject_bad_citation(a):
+    """A fact without a checkable citation is a memory, not knowledge.
+
+    Two refusals, both loud. `--corrob self` on a FACT: `self` is defined by
+    this tool's own help as "our own notes or code -- a pointer, not knowledge",
+    which is the reliable tell for a row that is about us rather than about
+    OS/2. It stays correct for a SEARCH: recording where WE looked is our state
+    by nature, which is what the search table is for."""
+    if a.corrob == "self":
+        die("a FACT may not be corroborated by `self`.\n"
+            "       `self` means our own notes or code -- a pointer, not knowledge.\n"
+            "       A fact here is about OS/2: IBM documentation, RE of a shipped\n"
+            "       binary, or a measurement on a real machine. What your own code\n"
+            "       does belongs in your project's notes; it changes every day and\n"
+            "       would need constant updating here.\n"
+            "       Use --corrob ibm-doc / bytes / re / measured / two-source.")
+    cite = _PARENS.sub(" ", a.cite or "")
+    if _PROJECT_CITE.search(cite):
+        die(f"the citation points into a PROJECT's own tree, not at a source:\n"
+            f"       {a.cite}\n"
+            f"       Your code is the SUBJECT being validated, never the authority\n"
+            f"       for what OS/2 does, and a row keyed to a tree that changes\n"
+            f"       every day is stale on arrival.\n" + _CITE_HELP)
+    if not any(rx.search(cite) for rx in _CITE_OK):
+        die(f"that citation names nothing checkable:\n"
+            f"       {a.cite}\n"
+            f"       A fact without a checkable citation is a memory. Recorded as\n"
+            f"       given it would look exactly like a sourced one, which is the\n"
+            f"       single thing this store cannot absorb.\n" + _CITE_HELP)
+
+
+def cmd_add(a):
+    _reject_bad_citation(a)
+    check_tag(a.prov, a.corrob, a.verify, a.verify2)
+    c = connect()
+    cur = c.execute(
+        "INSERT INTO fact(claim,subject,component,kind,provenance,citation,"
+        "verify_cmd,verify_cmd2,build,derived_at,derived_by,corroboration) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (a.message, a.subject, a.component, a.kind, a.prov, a.cite,
+         a.verify, a.verify2, a.build, int(time.time()), a.by, a.corrob))
+    c.commit()
+    print(f"fact #{cur.lastrowid}  {a.subject}  [{a.prov}/{a.corrob}]  {a.cite}")
+    if not a.verify:
+        print("  note: no --verify command. `know verify` cannot check this row,\n"
+              "        which is what separates a shortcut from a memory.")
+
+
+def cmd_absent(a):
+    c = connect()
+    c.execute("INSERT INTO search(question,tier,target,verdict,result,"
+              "verify_cmd,ts) VALUES (?,?,?,?,?,?,?)",
+              (a.question, a.tier, a.target, a.verdict, a.result,
+               a.verify, int(time.time())))
+    c.commit()
+    print(f"recorded {a.verdict}: {a.tier} :: {a.target}")
+    if a.verdict == "absent" and not a.verify:
+        print("  note: no --verify command. A negative result is recorded here as\n"
+              "        a FINDING, so a WRONG one closes a question permanently.\n"
+              "        Give the exact command that found nothing, so `know verify`\n"
+              "        can catch it going stale.")
+
+
+# Words too common to distinguish one recorded search from another.
+_SEARCH_STOP = {"the", "and", "for", "are", "was", "does", "did", "what", "when",
+                "where", "which", "with", "that", "this", "from", "have", "has",
+                "how", "why", "its", "it's", "not", "any", "all", "can", "use",
+                "used", "into", "onto", "under", "over", "only", "own",
+                "documented", "document", "documentation", "about", "real",
+                "book", "books"}
+
+
+def prior_searches(c, query, limit=5):
+    """Recorded searches relevant to `query`, ranked by shared distinctive terms.
+
+    WHY NOT `question LIKE '%<query>%'`, which is what this was until the wiring
+    was tested end to end: that requires the STORED question to contain the typed
+    one verbatim, so you had to already know the recorded wording to find it.
+    Asking "is FSH_CALLDRIVER documented in the IBM books" surfaced nothing while
+    the store held "...in the IBM INF books" -- one word apart. That made the
+    negative-result feature, which is the ONLY thing this store does that a grep
+    cannot, effectively unreachable, and it was invisible until a live run.
+
+    Term overlap rather than FTS because `search` has no FTS index and adding one
+    is a schema migration with export and round-trip consequences for a table
+    that holds a handful of rows. Revisit if it grows: the ranking below is
+    linear in the table."""
+    terms = {t for t in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", query.lower())
+             if t not in _SEARCH_STOP}
+    if not terms:
+        return []
+    rows = c.execute("SELECT id,tier,target,verdict,result,question,ts,"
+                     "superseded_by FROM search").fetchall()
+    scored = []
+    for r in rows:
+        hay = f"{r['question']} {r['result'] or ''}".lower()
+        n = sum(1 for t in terms if t in hay)
+        if n:
+            scored.append((n, r["ts"], r))
+    scored.sort(key=lambda x: (-x[0], -x[1]))
+    return [r for _, _, r in scored[:limit]]
+
+
+def cmd_q(a):
+    c = connect()
+    stale = set() if a.no_stale_check else stale_set(c)
+    if stale:
+        print(f"!! {len(stale)} source file(s) CHANGED since ingest -- hits from "
+              f"them are marked [STALE]\n!! and may quote text the file no longer "
+              f"contains. Fix with: know refresh\n")
+    hits = search(c, a.query, limit=a.limit, corpus=a.corpus,
+                  component=a.component, facts_only=a.facts)
+    prior = prior_searches(c, a.query)
+    if prior:
+        print("ALREADY SEARCHED -- read this before searching anything else:")
+        for r in prior:
+            # A RETRACTED negative is still shown, and shown FIRST-CLASS -- the
+            # same treatment a superseded fact gets. Hiding it would delete the
+            # trap (a `grep -c` verify that COUNTS instead of finding nothing)
+            # that the row exists to teach.
+            sup = (f"   ** SUPERSEDED BY neg#{r['superseded_by']} -- read that "
+                   f"first **" if r["superseded_by"] else "")
+            print(f"  neg#{r['id']} {r['verdict']:<7} {r['tier']:<15} "
+                  f"\"{r['question']}\"{sup}")
+            print(f"          {r['target']}"
+                  + (f"\n          {r['result']}" if r["result"] else ""))
+        print("  (`know log` for the full transcript; an 'absent' row means "
+              "someone already\n   looked and did not find it -- re-running "
+              "their search costs you and proves\n   nothing new unless you "
+              "widen it.)\n")
+    if not hits:
+        print("no hits. That is NOT a finding until you have also grepped: this "
+              "store holds\nonly what has been ingested (know stats), and "
+              "`os2-lib grep` reads the rest.")
+        return
+    shown_fact = shown_chunk = False
+    for h in hits:
+        if h["what"] == "fact":
+            if not shown_fact:
+                print("-- derived facts (curated, with citations) --")
+                shown_fact = True
+            tag = f"fact #{h['id']} [{h['prov']}/{h['corrob']}]"
+            sup = ""
+            if h["superseded_by"]:
+                sup = f"  ** SUPERSEDED BY #{h['superseded_by']} -- read that first **"
+            print(f"\n{tag} {h['title']}{sup}\n  {h['text']}\n  cite: {h['cite']}")
+        else:
+            if not shown_chunk:
+                print("\n-- material, best first --")
+                shown_chunk = True
+            body = h["text"] if a.full else h["text"][:400].replace("\n", " ")
+            mark = " [STALE]" if h["cite"] in stale else ""
+            print(f"\n{h['cite']}{mark}  sec. {h['title'][:70]}\n  {body}")
+
+
+_ROW_ID = re.compile(r"^(neg)?#?(\d+)$", re.I)
+
+
+def parse_row_id(tok):
+    """'12' / '#12' -> ('fact', 12);  'neg7' / 'neg#7' -> ('search', 7).
+
+    TWO id spaces, spelled the way the tool already PRINTS them: `verify`
+    reports a fact as `#12` and a search row as `neg#7`, so the id a reader has
+    in hand is the id these verbs accept. Until this existed `supersede` was
+    `type=int` on both arguments and `supersede neg7 neg8` died with `invalid int
+    value: 'neg7'` -- so the negative half of the store had no correction path at
+    all.
+
+    `neg#` is the SEARCH table's spelling, not the `absent`-verdict's: every row
+    in that table shares one id space, and inventing a second prefix for `hit`
+    rows would make the id you read in one place unusable in another.
+    """
+    m = _ROW_ID.match(tok.strip())
+    if not m:
+        die(f"not a row id: {tok!r}\n"
+            f"       facts are `12` or `#12`; search/negative rows are "
+            f"`neg7` or `neg#7`, exactly as `know verify --all` prints them")
+    return ("search" if m.group(1) else "fact"), int(m.group(2))
+
+
+def fmt_row_id(table, i):
+    return f"neg#{i}" if table == "search" else f"#{i}"
+
+
+def cmd_show(a):
+    c = connect()
+    table, rid = parse_row_id(a.id)
+    r = c.execute(f"SELECT * FROM {table} WHERE id=?", (rid,)).fetchone()
+    if not r:
+        die(f"no {fmt_row_id(table, rid)}", 1)
+    for k in r.keys():
+        if r[k] not in (None, ""):
+            print(f"{k:<14} {r[k]}")
+    # Both directions of the chain, for BOTH tables. A superseded negative that
+    # could only be read back through `export` would be text kept where nobody
+    # looks.
+    if r["superseded_by"]:
+        print(f"{'SUPERSEDED BY':<14} {fmt_row_id(table, r['superseded_by'])}"
+              f"  -- read that first")
+    kids = c.execute(f"SELECT id FROM {table} WHERE superseded_by=?",
+                     (rid,)).fetchall()
+    if kids:
+        print(f"supersedes     "
+              f"{', '.join(fmt_row_id(table, k['id']) for k in kids)}")
+
+
+def cmd_log(a):
+    c = connect()
+    rows = c.execute("SELECT * FROM search WHERE question LIKE ? ORDER BY ts",
+                     (f"%{a.question}%",)).fetchall()
+    if not rows:
+        print("no transcript for that question")
+        return
+    for r in rows:
+        print(f"{time.strftime('%Y-%m-%d', time.localtime(r['ts']))}  "
+              f"{r['verdict']:<7} {r['tier']:<15} {r['target']}"
+              + (f"\n    {r['result']}" if r["result"] else ""))
+
+
+def cmd_supersede(a):
+    """A correction is a data structure, for facts AND for negatives.
+
+    ONE TABLE PER CALL, refused loudly across the two. `fact.superseded_by`
+    REFERENCES fact(id) and `search.superseded_by` REFERENCES search(id), so a
+    cross-table link is not a debatable modelling choice -- it is an id pointing
+    into the wrong table, and it would read back as a valid row.
+    """
+    c = connect()
+    t_old, old = parse_row_id(a.old)
+    t_by, by = parse_row_id(a.by)
+    if t_old != t_by:
+        die(f"{fmt_row_id(t_old, old)} and {fmt_row_id(t_by, by)} are in "
+            f"different tables\n"
+            f"       superseded_by points WITHIN a table; a cross-table id "
+            f"would silently name an unrelated row.\n"
+            f"       If a negative turned out to be wrong because the thing IS "
+            f"there, record the finding\n"
+            f"       with `know add`, then retract the negative with a "
+            f"corrected `know absent` and supersede it by THAT.")
+    if old == by:
+        die(f"{fmt_row_id(t_old, old)} cannot supersede itself")
+    for i in (old, by):
+        if not c.execute(f"SELECT 1 FROM {t_old} WHERE id=?", (i,)).fetchone():
+            die(f"no {fmt_row_id(t_old, i)}", 1)
+    cur = c.execute(f"SELECT superseded_by FROM {t_old} WHERE id=?",
+                    (old,)).fetchone()["superseded_by"]
+    if cur is not None:
+        die(f"{fmt_row_id(t_old, old)} is already superseded by "
+            f"{fmt_row_id(t_old, cur)}\n"
+            f"       Re-pointing it would rewrite the churn ledger this verb "
+            f"exists to keep. A correction OF\n"
+            f"       a correction EXTENDS the chain instead: supersede "
+            f"{fmt_row_id(t_old, cur)}, the current tip, by the new row.")
+    # A cycle would drop BOTH rows out of `verify`'s sweep -- two rows silently
+    # unmeasured, reported by nothing, which is the exact failure this whole
+    # instrument exists to prevent. Walk the chain from `by` first.
+    seen, cursor = {by}, by
+    while True:
+        nxt = c.execute(f"SELECT superseded_by FROM {t_old} WHERE id=?",
+                        (cursor,)).fetchone()["superseded_by"]
+        if nxt is None:
+            break
+        if nxt == old or nxt in seen:
+            die(f"that would make a supersede CYCLE through "
+                f"{fmt_row_id(t_old, nxt)}\n"
+                f"       Every row in a cycle is superseded, so every row in it "
+                f"drops out of `verify`\n"
+                f"       and nothing reports that it did.")
+        seen.add(nxt)
+        cursor = nxt
+    c.execute(f"UPDATE {t_old} SET superseded_by=? WHERE id=?", (by, old))
+    # The audit row records WHICH table, and does NOT put a search id in fact_id
+    # (that column REFERENCES fact). fact_id is set only for a fact.
+    c.execute("INSERT INTO search(question,tier,target,verdict,result,fact_id,ts) "
+              "VALUES (?,?,?,?,?,?,?)",
+              (f"supersede {fmt_row_id(t_old, old)} by {fmt_row_id(t_by, by)}",
+               "other", f"{t_old}#{old}", "hit", a.message,
+               by if t_old == "fact" else None, int(time.time())))
+    c.commit()
+    print(f"{fmt_row_id(t_old, old)} superseded by {fmt_row_id(t_by, by)} -- "
+          f"the old row is KEPT as the churn\nledger, with its text and its "
+          f"verify command, and is returned beside its correction.")
+    if t_old == "search":
+        print("It drops out of `know verify --all` from now on; `know show "
+              f"{fmt_row_id(t_old, old)}` still reads it in full.")
+
+
+def cmd_promote(a):
+    """Raise (or correct) a fact's provenance. Deliberately NOT automatable:
+    promoting an inference to an observation is how a re-derivation becomes a
+    wrong re-derivation, and it is a judgement, not a command exit code.
+
+    The original citation is APPENDED TO, never replaced. An earlier version
+    wrote --evidence over `citation` and the prior file:line was unrecoverable
+    even from the audit row -- in the one verb nominated as the human gate, under
+    a schema comment saying citation is NOT NULL "deliberately: a fact without a
+    checkable citation is a memory".
+
+    And a corroboration change requires a NEW --verify: the old command
+    establishes the OLD basis, so leaving it in place makes `verify --all` report
+    AGREE about evidence that is no longer the citation."""
+    if os.environ.get("KNOW_AGENT"):
+        die("promote is refused while KNOW_AGENT is set.\n"
+            "       Raising a provenance tag is a human or graded-review act.\n"
+            "       Automation records a PROPOSAL with `know add --prov INF`\n"
+            "       and leaves the tag alone.")
+    c = connect()
+    r = c.execute("SELECT provenance, corroboration, subject, citation, "
+                  "verify_cmd, verify_cmd2 FROM fact WHERE id=?", (a.id,)).fetchone()
+    if not r:
+        die(f"no fact #{a.id}", 1)
+    v1 = a.verify if a.verify is not None else r["verify_cmd"]
+    v2 = a.verify2 if a.verify2 is not None else r["verify_cmd2"]
+    if a.corrob != r["corroboration"] and a.verify is None:
+        die(f"corroboration is changing '{r['corroboration']}' -> '{a.corrob}' "
+            f"but no --verify was given.\n"
+            f"       The stored command establishes the OLD basis, so leaving it\n"
+            f"       makes `verify --all` report AGREE about evidence that is no\n"
+            f"       longer the citation. Give the command that checks the NEW\n"
+            f"       basis (or pass --verify '' to record that none exists).")
+    check_tag(a.prov, a.corrob, v1 or None, v2 or None)
+    stamp = time.strftime("%Y-%m-%d", time.localtime())
+    citation = (f"{r['citation']}\n  + promoted {stamp} "
+                f"[{r['provenance']}/{r['corroboration']}] -> "
+                f"[{a.prov}/{a.corrob}] by {a.by}: {a.evidence}")
+    # EVERY field this UPDATE overwrites goes into the audit row first. One
+    # version overwrote `citation` and kept nothing; its own fix then overwrote
+    # `verify_cmd`/`verify_cmd2` instead, keeping nothing -- the same defect one
+    # field over, in the same function, introduced by the fix for the first. The
+    # rule that generalises: a verb whose whole job is to record a transition
+    # must record what it DISPLACED, not merely what replaced it.
+    prior = [f"prior citation: {r['citation']}"]
+    if v1 != r["verify_cmd"]:
+        prior.append(f"prior verify_cmd: {r['verify_cmd'] or '(none)'}")
+    if v2 != r["verify_cmd2"]:
+        prior.append(f"prior verify_cmd2: {r['verify_cmd2'] or '(none)'}")
+    c.execute("UPDATE fact SET provenance=?, corroboration=?, citation=?, "
+              "verify_cmd=?, verify_cmd2=? WHERE id=?",
+              (a.prov, a.corrob, citation, v1 or None, v2 or None, a.id))
+    c.execute("INSERT INTO search(question,tier,target,verdict,result,fact_id,ts) "
+              "VALUES (?,?,?,?,?,?,?)",
+              (f"promote #{a.id}", "other", f"fact#{a.id}", "hit",
+               f"[{r['provenance']}/{r['corroboration']}] -> [{a.prov}/{a.corrob}] "
+               f"by {a.by}: {a.evidence}  (" + "; ".join(prior) + ")",
+               a.id, int(time.time())))
+    c.commit()
+    print(f"#{a.id} {r['subject']}: [{r['provenance']}/{r['corroboration']}] "
+          f"-> [{a.prov}/{a.corrob}]  authorised by {a.by}")
+    print("  prior state kept in the audit row: " + ", ".join(
+        x.split(":")[0] for x in prior))
+
+
+def cmd_stale(a):
+    c = connect()
+    changed, missing = stale_paths(c)
+    for path, corpus, n in changed:
+        print(f"CHANGED  {corpus:<8} {n:>6} chunks  {path}")
+    for path, corpus, n in missing:
+        print(f"MISSING  {corpus:<8} {n:>6} chunks  {path}")
+    if not changed and not missing:
+        print("index is current")
+        return
+    print(f"\n{len(changed)} changed, {len(missing)} missing")
+    if missing:
+        print("MISSING is usually an unmounted disk holding part of the library,\n"
+              "NOT a wrong answer -- `refresh` leaves those alone unless you\n"
+              "pass --prune.")
+    sys.exit(1 if changed else 0)
+
+
+def cmd_refresh(a):
+    c = connect()
+    changed, missing = stale_paths(c)
+    if not changed and not (missing and a.prune):
+        print("nothing to do"
+              + (f" ({len(missing)} missing, left alone)" if missing else ""))
+        return
+    by_kind = {}
+    for path, corpus, _ in changed:
+        by_kind.setdefault(corpus, []).append(path)
+    for kind, paths in by_kind.items():
+        _ingest(kind, paths)
+    if missing and a.prune:
+        for path, corpus, n in missing:
+            c.execute("DELETE FROM chunk WHERE path=?", (path,))
+            print(f"pruned {n} chunks from missing {path}")
+        c.commit()
+    elif missing:
+        print(f"{len(missing)} missing files left in place (--prune to drop them)")
+
+
+def cmd_ingest(a):
+    if a.paths:
+        if not a.kind:
+            die("ingest needs a KIND when you give explicit paths "
+                f"({'/'.join(sorted(CHUNKERS))})")
+        if a.role or a.category or a.item:
+            die("--role/--category/--item select material FROM THE LIBRARY; "
+                "they cannot be combined with explicit paths")
+        if a.dry_run:
+            for p in a.paths:
+                print(f"{a.kind:<8} {p}")
+            return
+        _ingest(a.kind, [os.path.abspath(p) for p in a.paths])
+        return
+    if a.kind and a.kind not in CHUNKERS:
+        die(f"unknown kind {a.kind!r} ({'/'.join(sorted(CHUNKERS))})")
+    srcs = library_sources(category=a.category, role_name=a.role, slug=a.item,
+                           want_kind=a.kind)
+    by_kind, per_item = {}, {}
+    for path, kind, it in srcs:
+        by_kind.setdefault(kind, []).append(os.path.abspath(path))
+        per_item[f"{it.category}/{it.slug}"] = per_item.get(
+            f"{it.category}/{it.slug}", 0) + 1
+    for name in sorted(per_item):
+        print(f"{per_item[name]:>6} file(s)  {name}")
+    if a.dry_run:
+        print(f"\n-- dry run: {len(srcs)} file(s), "
+              + ", ".join(f"{k}={len(v)}" for k, v in sorted(by_kind.items()))
+              + " -- nothing written")
+        return
+    for kind in sorted(by_kind):
+        _ingest(kind, by_kind[kind])
+
+
+def _ingest(kind, paths):
+    c = connect()
+    fn = CHUNKERS[kind]
+    nf = nc = 0
+    for p in paths:
+        try:
+            text = open(p, encoding="utf-8", errors="replace").read()
+        except OSError as e:
+            print(f"skip {p}: {e}", file=sys.stderr)
+            continue
+        sha = hashlib.sha256(text.encode()).hexdigest()[:16]
+        st = os.stat(p)
+        rows = fn(text)
+        if not rows:
+            print(f"skip {p}: chunker produced 0 chunks", file=sys.stderr)
+            continue
+        c.execute("DELETE FROM chunk WHERE path=?", (p,))
+        for i, (heading, body) in enumerate(rows):
+            c.execute("INSERT INTO chunk(corpus,path,sha,section,heading,body,"
+                      "size,mtime) VALUES (?,?,?,?,?,?,?,?)",
+                      (kind, p, sha, i, heading, body,
+                       int(st.st_size), int(st.st_mtime)))
+        nf += 1
+        nc += len(rows)
+    c.commit()
+    print(f"ingested {nf} files, {nc} chunks (kind={kind})")
+    return nf, nc
+
+
+def cmd_verify(a):
+    c = connect()
+    cwd = os.path.abspath(os.path.expanduser(a.cwd))
+    if not os.path.isdir(cwd):
+        die(f"--cwd {cwd} is not a directory")
+    if a.all:
+        rows = c.execute("SELECT id,subject,verify_cmd,verify_cmd2,corroboration "
+                         "FROM fact WHERE superseded_by IS NULL ORDER BY id"
+                         ).fetchall()
+    else:
+        rows = c.execute("SELECT id,subject,verify_cmd,verify_cmd2,corroboration "
+                         "FROM fact WHERE id=?", (a.id,)).fetchall()
+    if not rows and not a.all:
+        die("nothing to verify (empty selection)")
+    bad = unchecked = 0
+    for r in rows:
+        if not r["verify_cmd"]:
+            unchecked += 1
+            print(f"UNCHECKABLE #{r['id']:<5} {r['subject']}")
+            continue
+        cmds = [r["verify_cmd"]] + ([r["verify_cmd2"]] if r["verify_cmd2"] else [])
+        results = []
+        for cmd in cmds:
+            try:
+                p = subprocess.run(cmd, shell=True, capture_output=True,
+                                   text=True, timeout=120, cwd=cwd)
+                results.append(p.returncode == 0)
+            except subprocess.TimeoutExpired:
+                results.append(False)
+        ok = all(results)          # two-source: BOTH sources must still agree
+        arms = "" if len(results) < 2 else \
+               f"  [{'+'.join('ok' if x else 'FAIL' for x in results)}]"
+        print(f"{'AGREE' if ok else 'DISAGREE':<11} #{r['id']:<5} "
+              f"{r['subject']}{arms}")
+        bad += not ok
+    # Every absent row, not just the ones that can be re-run. Filtering on
+    # `verify_cmd IS NOT NULL` here made an unverifiable negative INVISIBLE,
+    # while an unverifiable fact printed UNCHECKABLE -- so the half of the store
+    # that closes questions permanently was the half that could hide.
+    # `superseded_by IS NULL` mirrors the fact query above: a retracted negative
+    # is out of the sweep, not deleted. The count is REPORTED below rather than
+    # left implicit -- a row that silently stops being measured is the failure
+    # this whole instrument is about.
+    negs = c.execute("SELECT id, question, target, verify_cmd FROM search "
+                     "WHERE verdict='absent' AND superseded_by IS NULL"
+                     ).fetchall() if a.all else []
+    neg_ok = neg_bad = neg_unchecked = 0
+    for r in negs:
+        if not r["verify_cmd"]:
+            neg_unchecked += 1
+            print(f"{'UNCHECKABLE':<12} neg#{r['id']:<4} {r['question'][:52]}")
+            continue
+        try:
+            p = subprocess.run(r["verify_cmd"], shell=True, capture_output=True,
+                               text=True, timeout=120, cwd=cwd)
+            still_absent = p.returncode != 0 or not p.stdout.strip()
+        except subprocess.TimeoutExpired:
+            still_absent = False
+        if still_absent:
+            neg_ok += 1
+            print(f"{'STILL ABSENT':<12} neg#{r['id']:<4} {r['question'][:52]}")
+        else:
+            neg_bad += 1
+            print(f"{'CONTRADICTED':<12} neg#{r['id']:<4} {r['question'][:52]}")
+            print(f"            -- the search that found nothing now finds "
+                  f"something. This is the dangerous row: a wrong 'absent' "
+                  f"closes a question permanently.")
+    sup_f = sup_n = 0
+    if a.all:
+        sup_f = c.execute("SELECT COUNT(*) n FROM fact "
+                          "WHERE superseded_by IS NOT NULL").fetchone()["n"]
+        sup_n = c.execute("SELECT COUNT(*) n FROM search WHERE verdict='absent' "
+                          "AND superseded_by IS NOT NULL").fetchone()["n"]
+    print(f"\nfacts:     {len(rows)-bad-unchecked} agree, {bad} DISAGREE, "
+          f"{unchecked} uncheckable (no verify_cmd)"
+          + (f", {sup_f} superseded (not swept)" if sup_f else ""))
+    if negs or sup_n:
+        print(f"negatives: {neg_ok} still absent, {neg_bad} CONTRADICTED, "
+              f"{neg_unchecked} uncheckable (no verify_cmd)"
+              + (f", {sup_n} superseded (not swept)" if sup_n else ""))
+    print(f"(commands ran with cwd={cwd})")
+    bad += neg_bad
+    if rows and unchecked and unchecked >= len(rows) / 2:
+        print("WARNING: most rows carry no verify_cmd. If `verify` cannot be "
+              "written for most\nrows, this store is a memory.")
+    sys.exit(bad)
+
+
+FACT_COLS = ("id", "claim", "subject", "component", "kind", "provenance",
+             "citation", "verify_cmd", "verify_cmd2", "build", "derived_at",
+             "derived_by", "corroboration", "superseded_by")
+SEARCH_COLS = ("id", "question", "tier", "target", "verdict", "result", "fact_id",
+               "verify_cmd", "superseded_by", "ts")
+
+
+def cmd_export(a):
+    """Two artifacts, on purpose:
+
+      facts.md / absent.md  -- readable, reviewable, diffable prose.
+      know.jsonl            -- LOSSLESS, and what `import` reads.
+
+    The prose alone is NOT a backup. An earlier version shipped a committed
+    sentence saying the store "can be rebuilt from" it while the export silently
+    dropped verify_cmd2, derived_at and EVERY negative's verify_cmd -- the last
+    being the commands the CONTRADICTED mechanism entirely depends on -- with no
+    importer in existence.
+
+    Chunks are deliberately NOT exported: they are re-derivable with `know
+    ingest`, and an export carrying book text would be redistributing material
+    that is not ours to redistribute.
+    """
+    import json
+    c = connect()
+    os.makedirs(a.dir, exist_ok=True)
+    fp, ap = os.path.join(a.dir, "facts.md"), os.path.join(a.dir, "absent.md")
+    jp = os.path.join(a.dir, "know.jsonl")
+
+    with open(fp, "w", encoding="utf-8") as f:
+        f.write("# Knowledge cache - facts\n\n"
+                "Generated by `know export`. **Do not edit by hand.** This is the\n"
+                "READABLE view; `know.jsonl` beside it is the lossless one and is\n"
+                "what `know import` reads. Sorted for a stable diff.\n\n")
+        for r in c.execute("SELECT * FROM fact ORDER BY subject, id"):
+            sup = (f" - **SUPERSEDED BY #{r['superseded_by']}**"
+                   if r["superseded_by"] else "")
+            # A markdown code span cannot span lines, and `promote` makes
+            # citations multi-line (it appends the transition rather than
+            # overwriting). Rendering one inline produced a broken span in the
+            # artifact people read and diff.
+            cite = r["citation"] or ""
+            if "\n" in cite:
+                cite_md = "- cite:\n\n  ```\n" + "\n".join(
+                    "  " + x for x in cite.splitlines()) + "\n  ```\n"
+            else:
+                cite_md = f"- cite: `{cite}`\n"
+            f.write(f"## #{r['id']} {r['subject']} "
+                    f"[{r['provenance']}/{r['corroboration']}]{sup}\n\n"
+                    f"{r['claim']}\n\n{cite_md}")
+            for k in ("verify_cmd", "verify_cmd2", "build", "component", "kind",
+                      "derived_by"):
+                if r[k]:
+                    f.write(f"- {k}: `{r[k]}`\n")
+            if r["derived_at"]:
+                f.write("- derived_at: "
+                        + time.strftime('%Y-%m-%d', time.localtime(r['derived_at']))
+                        + "\n")
+            f.write("\n")
+
+    with open(ap, "w", encoding="utf-8") as f:
+        f.write("# Knowledge cache - searches, including negative results\n\n"
+                "Generated by `know export`. An `absent` row is a FINDING: it\n"
+                "closes a question rather than leaving it for the next session to\n"
+                "re-derive. Its `verify` command is what `know verify --all`\n"
+                "re-runs to catch it going stale.\n\n")
+        for r in c.execute("SELECT * FROM search ORDER BY question, ts"):
+            # A retracted negative stays in the readable view, MARKED -- the same
+            # shape facts.md gives a superseded fact. Its wrong verify command is
+            # printed too: that command is the finding.
+            sup = (f" - **SUPERSEDED BY neg#{r['superseded_by']}**"
+                   if r["superseded_by"] else "")
+            f.write(f"- **{r['verdict']}** `{r['tier']}` `{r['target']}`{sup} - "
+                    f"{r['question']}"
+                    + (f" - {r['result']}" if r["result"] else "") + "\n")
+            if r["verify_cmd"]:
+                f.write(f"  - verify: `{r['verify_cmd']}`\n")
+
+    n = 0
+    with open(jp, "w", encoding="utf-8") as f:
+        for table, cols in (("fact", FACT_COLS), ("search", SEARCH_COLS)):
+            for r in c.execute(f"SELECT {','.join(cols)} FROM {table} ORDER BY id"):
+                f.write(json.dumps({"_t": table, **{k: r[k] for k in cols}},
+                                   sort_keys=True, ensure_ascii=False) + "\n")
+                n += 1
+    print(f"wrote {fp}\nwrote {ap}\nwrote {jp}  ({n} rows, lossless)")
+
+
+def cmd_import(a):
+    """Rebuild fact/search rows from know.jsonl. Chunks are NOT imported -- they
+    are re-derivable from the library with `know ingest`."""
+    import json
+    c = connect(create=True)
+    c.executescript(DDL)
+    migrate(c)
+    if c.execute("SELECT COUNT(*) n FROM fact").fetchone()["n"] and not a.force:
+        die("store already holds facts; refusing to import over them "
+            "(--force to REPLACE them)")
+    # --force is a RESTORE, not a merge. An earlier version only overwrote rows
+    # the export happened to carry, so a row present in the store and absent from
+    # the file survived and the result was a union -- which is the one thing a
+    # disaster-recovery verb must not produce, because it looks exactly like a
+    # successful restore. Clearing first makes the store a copy of the file,
+    # which is what "import" is for.
+    wiped = None
+    if a.force:
+        wiped = (c.execute("SELECT COUNT(*) n FROM fact").fetchone()["n"],
+                 c.execute("SELECT COUNT(*) n FROM search").fetchone()["n"])
+        c.execute("DELETE FROM search")
+        c.execute("DELETE FROM fact")
+        # NOT printed here: the integrity check below can still roll this back,
+        # and a run that says "cleared 2 rows" and then "the store is unchanged"
+        # reads as a store in an unknown state. Reported after the commit.
+    n = 0
+    for line in open(a.path, encoding="utf-8"):
+        line = line.strip()
+        if not line:
+            continue
+        row = json.loads(line)
+        t = row.pop("_t")
+        if t not in ("fact", "search"):
+            die(f"unknown row type {t!r} in {a.path}")
+        cols = [k for k in row]
+        # DELETE then INSERT, never INSERT OR REPLACE. `fact` is the content
+        # table of an EXTERNAL-CONTENT FTS5 index: REPLACE's implicit delete does
+        # NOT fire the AFTER DELETE trigger (recursive_triggers is off by
+        # default) while the AFTER INSERT trigger DOES fire, so the index gains a
+        # posting and never loses the old one. The result is silent: a query for
+        # a term the row no longer contains still returns it, and plain
+        # `integrity-check` passes -- only `integrity-check 1` catches it.
+        if row.get("id") is not None:
+            c.execute(f"DELETE FROM {t} WHERE id = ?", (row["id"],))
+        c.execute(f"INSERT INTO {t}({','.join(cols)}) "
+                  f"VALUES ({','.join('?' * len(cols))})",
+                  [row[k] for k in cols])
+        n += 1
+    # Assert it, do not assume it, and assert it BEFORE the commit -- an
+    # integrity check that runs after the write has landed can only report the
+    # corruption, not prevent it, and this is the disaster-recovery verb. The
+    # defect above is invisible to every ordinary query and to plain
+    # `integrity-check`.
+    try:
+        c.execute("INSERT INTO fact_fts(fact_fts, rank) VALUES('integrity-check', 1)")
+    except sqlite3.DatabaseError as e:
+        c.rollback()
+        die(f"import would have left the fact_fts index INCONSISTENT with its "
+            f"content table: {e}\n       ROLLED BACK -- the store is unchanged. "
+            f"If a store is already in this state, rebuild with:\n"
+            f"       sqlite3 <db> \"INSERT INTO fact_fts(fact_fts) VALUES('rebuild')\"")
+    c.commit()
+    if wiped:
+        print(f"--force: cleared {wiped[0]} fact and {wiped[1]} search row(s)")
+    print(f"imported {n} rows from {a.path}  (fact_fts integrity verified)")
+    print("chunks are NOT included -- re-run `know ingest` for the material")
+
+
+def cmd_stats(a):
+    c = connect()
+    print(f"store: {db_path()}")
+    f = c.execute("SELECT COUNT(*) n, SUM(superseded_by IS NOT NULL) s, "
+                  "SUM(verify_cmd IS NOT NULL) v FROM fact").fetchone()
+    print(f"  facts      {f['n'] or 0:>7}   ({f['s'] or 0} superseded, "
+          f"{f['v'] or 0} verifiable)")
+    for r in c.execute("SELECT corroboration, COUNT(*) n FROM fact "
+                       "GROUP BY corroboration ORDER BY 2 DESC"):
+        print(f"    {r['corroboration']:<12} {r['n']:>5}   "
+              f"{CORROB_MEANS.get(r['corroboration'], '')}")
+    s = c.execute("SELECT COUNT(*) n, SUM(verdict='absent') a, "
+                  "SUM(verdict='absent' AND verify_cmd IS NOT NULL) v, "
+                  "SUM(verdict='absent' AND superseded_by IS NOT NULL) x "
+                  "FROM search").fetchone()
+    # `x` is reported because `verify --all` no longer sweeps those rows: a count
+    # here that disagrees with the sweep's is a reader's first clue that
+    # something is being skipped, and this is where they would look.
+    print(f"  searches   {s['n'] or 0:>7}   ({s['a'] or 0} negative, "
+          f"{s['v'] or 0} of them re-runnable, {s['x'] or 0} superseded)")
+    for r in c.execute("SELECT corpus, COUNT(*) n, SUM(LENGTH(body)) b "
+                       "FROM chunk GROUP BY corpus ORDER BY 2 DESC"):
+        print(f"  {r['corpus']:<10} {r['n']:>7}   {(r['b'] or 0)/1e6:.1f} MB")
+    t = c.execute("SELECT COUNT(*) n FROM chunk").fetchone()["n"]
+    if t:
+        print(f"  {'chunks':<10} {t:>7}")
+
+
+INGEST_HELP = """\
+With PATHs, each file is chunked as KIND. With no PATHs, the material comes from
+the OS/2 library (PATHS.md), and nothing else on the disk is ever searched for.
+
+What gets indexed, and as what:
+  * every item's derived text/ and extracted tree/, plus the original it links
+    to -- the same roots `os2-lib grep` reads, so the two agree about what the
+    library contains;
+  * items whose kind is not text (binaries, disc and VM images, dumps, installed
+    system trees, toolchains) are skipped unless you name them with --role;
+  * each file's chunker comes from its extension: .h/.inc/.c/.cpp/.asm/.def/.idl
+    and friends -> source; .htm/.html -> html; .md -> md; a .txt is read to
+    decide -- converted INF text (it carries its own '=== heading ===' markers)
+    -> inf, anything else -> redbook, whose chunker falls back to fixed windows.
+  Other extensions are skipped: they are not prose, and indexing them would only
+  dilute the result list.
+
+If the library holds nothing usable, this exits non-zero and names what is
+missing rather than guessing at a path. Use --dry-run to see the plan first."""
+
+VERIFY_HELP = """\
+Re-runs each row's stored verify_cmd and reports AGREE / DISAGREE / UNCHECKABLE;
+the exit code is the DISAGREE count. A negative's command is re-run too: one that
+now FINDS something is reported CONTRADICTED, which is the most dangerous row in
+the store, because a wrong 'absent' closes a question permanently.
+
+Commands run from --cwd, which defaults to the current directory. WRITE A
+verify_cmd THAT RUNS ANYWHERE: resolve library material by role rather than by
+path, e.g.
+
+  grep -n DosOpen "$(os2-lib role toolkit-headers headers)/bsedos.h"
+
+A command that only works from one directory on one machine is a command the
+next reader cannot run, which puts the row back to being a memory. And a
+verify_cmd must be able to FAIL ON THE CONTESTED HALF: ask what it would print if
+the claim were false in the specific way it can be false, then build that case
+and run it."""
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        prog="know", description=__doc__.splitlines()[0],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__[__doc__.index("STORE LOCATION"):])
+    sub = ap.add_subparsers(dest="cmd")
+
+    sub.add_parser("init", help="create/upgrade the store").set_defaults(fn=cmd_init)
+
+    p = sub.add_parser("add", help="record a derived fact (citation REQUIRED)",
+                       formatter_class=argparse.RawDescriptionHelpFormatter,
+                       epilog=_CITE_HELP)
+    p.add_argument("--subject", required=True)
+    p.add_argument("--kind", required=True, choices=KIND)
+    p.add_argument("--prov", required=True, choices=PROV)
+    p.add_argument("--cite", required=True,
+                   help="library role/item, book plus topic, file:line, or "
+                        "binary plus offset")
+    p.add_argument("--verify", help="ONE command that re-checks this claim, "
+                                    "runnable from anywhere")
+    p.add_argument("--verify2", help="the SECOND source's command; required "
+                                     "for --corrob two-source")
+    p.add_argument("--build", help="which binary/kernel/fixpak this is about")
+    p.add_argument("--component")
+    p.add_argument("--by", help="who or what derived it")
+    p.add_argument("--corrob", required=True, choices=CORROB,
+                   help="what the verification TOUCHES: "
+                        + "; ".join(f"{k}={v}" for k, v in CORROB_MEANS.items()))
+    p.add_argument("-m", "--message", required=True)
+    p.set_defaults(fn=cmd_add)
+
+    p = sub.add_parser("absent", help="record a search result, incl. a negative")
+    p.add_argument("--question", required=True)
+    p.add_argument("--tier", required=True, choices=TIER)
+    p.add_argument("--target", required=True, help="what was ACTUALLY searched")
+    p.add_argument("--verdict", default="absent",
+                   choices=("hit", "absent", "partial"))
+    p.add_argument("--result")
+    p.add_argument("--verify", help="the exact command that found nothing, so "
+                                    "`know verify` can catch it going stale")
+    p.set_defaults(fn=cmd_absent)
+
+    p = sub.add_parser("q", help="search facts and material")
+    p.add_argument("query")
+    p.add_argument("--limit", type=int, default=20,
+                   help="default 20; recall@50 measured 24/25 for ~16.6k tokens")
+    p.add_argument("--corpus", help="one chunker kind: "
+                                    + "/".join(sorted(CHUNKERS)))
+    p.add_argument("--component")
+    p.add_argument("--facts", action="store_true", help="derived facts only")
+    p.add_argument("--full", action="store_true", help="whole chunk, not a snippet")
+    p.add_argument("--no-stale-check", action="store_true",
+                   help="skip the staleness stat() pass (faster, less honest)")
+    p.set_defaults(fn=cmd_q)
+
+    p = sub.add_parser("show", help="one row in full, with its supersede chain")
+    p.add_argument("id", help="a fact id (12) or a search/negative id (neg7)")
+    p.set_defaults(fn=cmd_show)
+
+    p = sub.add_parser("log", help="the search transcript for a question")
+    p.add_argument("question")
+    p.set_defaults(fn=cmd_log)
+
+    p = sub.add_parser("supersede", help="correct a fact or a negative in place")
+    # NOT type=int: a negative id (`neg7`) died in argparse with `invalid int
+    # value`, so the one record type whose wrongness closes a question
+    # permanently could never be retracted.
+    p.add_argument("old", help="fact id (12) or negative id (neg7)")
+    p.add_argument("by", help="its replacement, in the SAME table")
+    p.add_argument("-m", "--message", required=True)
+    p.set_defaults(fn=cmd_supersede)
+
+    p = sub.add_parser("promote",
+                       help="raise/correct a provenance tag (not automatable)")
+    p.add_argument("id", type=int)
+    p.add_argument("--prov", required=True, choices=PROV)
+    p.add_argument("--corrob", required=True, choices=CORROB)
+    p.add_argument("--evidence", required=True,
+                   help="the NEW citation that justifies it")
+    p.add_argument("--by", required=True, help="who authorised it")
+    p.add_argument("--verify", help="command establishing the NEW basis; "
+                                    "required when corroboration changes")
+    p.add_argument("--verify2", help="second arm, for --corrob two-source")
+    p.set_defaults(fn=cmd_promote)
+
+    sub.add_parser("stale", help="source files that changed since ingest"
+                   ).set_defaults(fn=cmd_stale)
+    p = sub.add_parser("refresh", help="re-ingest what changed")
+    p.add_argument("--prune", action="store_true",
+                   help="also drop chunks for MISSING files (careful: an "
+                        "unmounted disk looks missing)")
+    p.set_defaults(fn=cmd_refresh)
+
+    p = sub.add_parser("ingest", help="index material, from the library or by path",
+                       formatter_class=argparse.RawDescriptionHelpFormatter,
+                       epilog=INGEST_HELP)
+    p.add_argument("kind", nargs="?", choices=sorted(CHUNKERS),
+                   help="required with PATHs; with no PATHs, limits the library "
+                        "ingest to this kind")
+    p.add_argument("paths", nargs="*", help="explicit files; omit to use the library")
+    p.add_argument("--role", help="only library items providing this role")
+    p.add_argument("--category", help="only this library category")
+    p.add_argument("--item", help="only this library item slug")
+    p.add_argument("-n", "--dry-run", action="store_true",
+                   help="list what would be ingested and write nothing")
+    p.set_defaults(fn=cmd_ingest)
+
+    p = sub.add_parser("verify", help="re-run stored verify commands",
+                       formatter_class=argparse.RawDescriptionHelpFormatter,
+                       epilog=VERIFY_HELP)
+    p.add_argument("id", type=int, nargs="?")
+    p.add_argument("--all", action="store_true")
+    p.add_argument("--cwd", default=".",
+                   help="working directory for every command (default: the "
+                        "current directory)")
+    p.set_defaults(fn=cmd_verify)
+
+    p = sub.add_parser("export", help="readable prose + a lossless know.jsonl")
+    p.add_argument("dir")
+    p.set_defaults(fn=cmd_export)
+    p = sub.add_parser("import", help="rebuild facts/searches from know.jsonl")
+    p.add_argument("path")
+    p.add_argument("--force", action="store_true",
+                   help="REPLACE the store's facts and searches with the file's")
+    p.set_defaults(fn=cmd_import)
+
+    sub.add_parser("stats", help="what the store holds").set_defaults(fn=cmd_stats)
+
+    a = ap.parse_args()
+    if not a.cmd:
+        ap.print_help()
+        sys.exit(1)
+    if a.cmd == "verify" and not a.all and a.id is None:
+        die("verify needs an ID or --all")
+    a.fn(a)
+
+
+if __name__ == "__main__":
+    main()

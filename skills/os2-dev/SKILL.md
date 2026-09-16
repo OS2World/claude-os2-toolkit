@@ -38,7 +38,9 @@ installed copy - updates overwrite it.
   symbol file), `lx_resolve_imports.py` (name what a fixup points at), `lx_symmatch.py` (prove a
   `.SYM` belongs to an image before trusting its names), `extract_omf_lib_ordinals.py` (turn
   `MODULE.#257` into `DosClose`), `driver_re.py` (dissect an LX/NE device driver),
-  `ddk_unpack.py` (merge the DDK's packages into one greppable tree), `kdb_*.py` (drive the OS/2
+  `ddk_unpack.py` (merge the DDK's packages into one greppable tree), `know` (the knowledge cache -
+  **search it before the books**, and record what you establish; see the `os2-toolkit:know` skill),
+  `kdb_*.py` (drive the OS/2
   kernel debugger over a VM serial pipe), and `tools/ghidra/` (headless LX and NE decompile
   pipelines; see its README).
   **Run `ls ${CLAUDE_PLUGIN_ROOT}/bin` rather than trusting this list** - it lags, and a tool you don't know about
