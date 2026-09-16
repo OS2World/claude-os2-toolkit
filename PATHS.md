@@ -174,6 +174,12 @@ vm: null                       # vm-image items only (section 9)
 | `install-media`, `system-tree`, `vm-template` | disc images, installed OS/2 drive trees, VM images |
 | `toolchain-openwatcom`, `toolchain-visualage`, `toolchain-gcc`, `ghidra` | tools |
 
+**`ingest`** narrows what the knowledge cache indexes from an item. Absent, it takes everything
+greppable. An item whose bulk is *derived* wants narrowing: a reverse-engineering corpus is its
+write-ups plus a hundred thousand decompiled files, and indexing the latter puts one interpretation
+of some bytes in the same ranking as IBM's own words - and buries them. The derived files stay
+reachable through `os2-lib grep` and by opening them, which is how an interpretation should be read.
+
 **Provenance** orders search results - IBM's own material first, then community material (EDM2,
 third-party books), then the user's own, then unknown - so a hit is graded before it is read. It is
 optional and never reported as a problem.

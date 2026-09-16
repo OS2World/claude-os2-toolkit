@@ -663,6 +663,17 @@ def library_sources(category=None, role_name=None, slug=None, want_kind=None):
             unusable.append(f"{it.slug} ({why})")
             continue
         n0 = len(out)
+        # ITEM.md may narrow what is worth indexing from this item. An RE corpus
+        # is the case that forces it: its write-ups are the knowledge, while its
+        # hundred thousand decompiled .c files are one interpretation of bytes,
+        # and indexing them would rank a guess beside IBM's own words.
+        spec = it.get("ingest")
+        allow = None
+        if spec is not None:
+            allow = {k.strip() for k in str(spec).split(",") if k.strip()}
+            if allow == {"none"}:
+                unusable.append(f"{it.slug} (ingest: none)")
+                continue
         for r in roots:
             for path in _walk_text(r):
                 rp = os.path.realpath(path)
@@ -676,6 +687,8 @@ def library_sources(category=None, role_name=None, slug=None, want_kind=None):
                     kind = _sniff_text(path)
                 if kind is None or (want_kind and kind != want_kind):
                     continue
+                if allow is not None and kind not in allow:
+                    continue            # ITEM.md `ingest:` narrowed this item
                 out.append((path, kind, it))
         if len(out) == n0:
             unusable.append(f"{it.slug} (no indexable files under its roots)")

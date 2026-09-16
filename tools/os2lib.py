@@ -38,7 +38,11 @@ CANONICAL = {"archive", "tree", "file"}
 REQUIRED = ["title", "category", "kind", "provides", "mode"]
 SLUG_RE = re.compile(r"^[a-z0-9]+(?:[.-][a-z0-9]+)*$")
 SEARCH = {"text", "original", "both"}
+# ITEM.md `ingest:` - which chunker kinds the knowledge cache should take from
+# this item, or "none". Absent means all of them.
+INGEST_KINDS = {"none", "inf", "md", "redbook", "source", "html"}
 KEY_ORDER = ["title", "category", "kind", "provides", "provenance", "mode", "canonical",
+             "ingest",
              "original", "acquired", "part_of", "derived_from", "converter", "search",
              "regenerable", "paths", "copies", "vm"]
 
@@ -700,6 +704,12 @@ def check_items(root):
         for k in REQUIRED:
             if it.meta.get(k) in (None, "", []):
                 p(where, "missing required field '%s'" % k)
+        spec = it.get("ingest")
+        if spec:
+            bad = [k.strip() for k in str(spec).split(",") if k.strip() not in INGEST_KINDS]
+            if bad:
+                p(where, "ingest names unknown kind(s) %s (known: %s)"
+                  % (", ".join(bad), ", ".join(sorted(INGEST_KINDS))))
         if it.get("search") and it.get("search") not in SEARCH:
             p(where, "search '%s' is not one of %s" % (it.get("search"), ", ".join(sorted(SEARCH))))
         if it.get("category") and it.get("category") != it.category:
