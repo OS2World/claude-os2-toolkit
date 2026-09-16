@@ -429,6 +429,111 @@ proves nothing about whether the program ever read it. Make the program emit som
 produce, or disable echo in the harness. (Getting this wrong produces confident false PASSes for as
 long as you care to run it.)
 
+## Cloning a template VM: clone, use, discard
+
+Once a VM is installed and configured the way you want it, stop treating it as *the* test machine.
+Snapshot it as a **template** and make every test run a throwaway clone. A run that corrupts the
+system, wedges the desktop or leaves a half-installed driver behind then costs one `unregistervm`
+instead of a reinstall, and two runs cannot contaminate each other.
+
+**Full clones, never linked.** A linked clone keeps a reference to the parent's disk chain, so the
+template cannot be improved while any clone exists without corrupting the clones - and the whole
+point of a template is that it keeps improving. A full clone also flattens its disks to base type,
+which is what makes the offline mount below possible at all: a snapshot chain is not directly
+mountable.
+
+```sh
+TEMPLATE="my-os2-template"          # the VM you snapshotted
+SNAP="baseline"                     # the snapshot to clone from
+CLONE="os2test-$$"                  # name it after the run - the name IS the tracking
+
+VBoxManage clonevm "$TEMPLATE" --snapshot "$SNAP" --mode machine --name "$CLONE" --register
+```
+
+**If the template has a debug serial port, repoint it before starting the clone.** The clone
+inherits the host pipe path (`uartmode2 server /tmp/dbgport`), so two clones - or a clone and the
+template - fight over the same socket:
+
+```sh
+VBoxManage modifyvm "$CLONE" --uartmode2 server "/tmp/dbgport-$CLONE"
+# ...and export KDB_DBGPORT / KDB_REAL_DBGPORT to match if you drive the kernel debugger
+# (recipes/setup-kdb-vm.md).
+VBoxManage startvm "$CLONE" --type headless
+```
+
+**Find the clone by MAC, not by a remembered address.** `clonevm` regenerates the MAC, so the clone
+takes its own DHCP lease:
+
+```sh
+MAC=$(VBoxManage showvminfo "$CLONE" --machinereadable \
+      | sed -n 's/^macaddress1="\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)"/\1:\2:\3:\4:\5:\6/p')
+NET=${NET:-192.168.0}                           # set this to YOUR LAN prefix
+for j in $(seq 1 254); do (ping -c1 -W1 $NET.$j >/dev/null 2>&1 &); done; sleep 3
+IP=$(ip neigh | grep -i "$MAC" | awk '{print $1}' | head -1)
+```
+
+**ssh to a clone with host-key checking off.** Every clone carries the template's host keys and
+clones reuse DHCP addresses, so `known_hosts` reports mismatches that read like MITM warnings:
+
+```sh
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "os2@$IP"
+```
+
+**Discard when the run is done:**
+
+```sh
+VBoxManage controlvm "$CLONE" poweroff
+VBoxManage unregistervm "$CLONE" --delete
+ssh-keygen -R "$IP"
+```
+
+### Bulk data in and out: mount the clone's JFS disk offline [OBS-RE]
+
+When ssh or the shared folder is awkward - bulk data, or files carrying extended attributes - power
+the clone **off** and mount its disk on the host. Linux reads OS/2 JFS.
+
+```sh
+sudo modprobe nbd max_part=8 ; sudo modprobe jfs
+sudo qemu-nbd --connect=/dev/nbd1 -f vdi "$HOME/VirtualBox VMs/$CLONE/$CLONE-disk1.vdi"
+sudo mount -t jfs /dev/nbd1p5 /mnt/os2d        # partition type 0x35 = OS/2 JFS
+# ... work ...
+sudo sync; sudo umount /mnt/os2d; sudo qemu-nbd --disconnect /dev/nbd1
+```
+
+Three traps, each of which costs a round if you meet it cold:
+
+- **The JFS volume is usually `p5`, a logical partition inside an extended partition** (`p1` is the
+  extended container), not `p1`.
+- **`qemu-nbd --read-only` sets a STICKY read-only flag on the nbd device.** After one read-only
+  attach, `/sys/block/nbdN/ro` stays `1`, and every later mount of that device is silently forced
+  read-only: `mount` prints *"source write-protected, mounted read-only"* and still **exits 0**. Use
+  a different `/dev/nbdN`, and believe the warning rather than the exit status.
+- **`getfattr` may not be installed.** `python3 -c "import os,sys; print(os.listxattr(sys.argv[1]))" FILE`
+  needs nothing extra.
+
+### Extended attributes survive the round trip [OBS-RE]
+
+Measured both ways on a JFS volume, not assumed. It works because JFS came *from* OS/2: the Linux
+driver is the same lineage rather than a reimplementation, and it ships a dedicated OS/2 attribute
+handler (`jfs_os2_xattr_handler` and the `os2.` namespace prefix, `fs/jfs/xattr.c`).
+
+| step | result |
+|---|---|
+| OS/2 `SysPutEA("D:\eatest.txt","TESTEA","HELLO-FROM-OS2")` | rc=0 |
+| Linux `os.listxattr` on that file, disk mounted offline | `os2.TESTEA = b'HELLO-FROM-OS2'` |
+| Linux writes a new file and `os.setxattr(..., "os2.LINUXEA", ...)` | ok |
+| Linux adds another EA to the **OS/2-created** file | ok, the existing EA intact |
+| OS/2 `SysGetEA` after boot | all three EAs readable, values unchanged |
+
+**Also worth knowing:** kLIBC stores unix metadata as OS/2 EAs, so a kLIBC-created file carries
+`os2.UID os2.GID os2.MODE os2.INO os2.RDEV os2.GEN os2.FLAGS`, each value prefixed with the binary
+EA type marker (`\xfe\xff`). An EA written by `SysPutEA` has no such prefix. "The EAs on this file"
+is therefore not a homogeneous set - check the prefix before parsing a value.
+
+**Bounds, so this is not over-read:** file data and EAs are proven, in both directions. ACLs and
+LVM-level metadata are **not** tested. And this says nothing about HPFS or FAT volumes, where Linux
+has no EA support at all.
+
 ## SSH (build + run over the wire)
 Install an SSH server on the VM (OpenSSH is in the netlabs RPM repos: `yum install openssh`).
 Generate **your own** keys and credentials - this kit ships none.
