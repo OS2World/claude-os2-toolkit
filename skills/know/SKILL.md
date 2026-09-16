@@ -52,8 +52,9 @@ material uses IBM's spelling (`InfoSegGDT`, not "the GIS struct").
    raw grep. **Record the miss rather than routing around it** - a miss is the
    only honest signal of what the cache still lacks.
 3. If you were verifying a hit against the primary source, append
-   `# know-verify` instead. Same effect; it just keeps a verified hit out of the
-   miss ledger, where it would read as a gap that is not one.
+   `# know-verify` instead. Same effect; it just tells a reader of the transcript
+   that this was a verified hit being re-checked, not a gap in the cache. Neither
+   escape writes anything: the hook is stateless.
 
 If a role the question needs is missing from the library entirely, say which
 material is missing and ask whether the user has it - do not go looking through
