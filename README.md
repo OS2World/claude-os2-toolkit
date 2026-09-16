@@ -29,8 +29,8 @@ routes into the reference, verifies against the headers, and writes the code.
 | `os2-toolkit:contribute` | Write a finding back into your checkout, provenance-tagged and de-identified. |
 | `os2-toolkit:ingest` | File OS/2 material you mention (a downloaded PDF, a folder of books, an SDK) into your local OS/2 library - see [`PATHS.md`](PATHS.md). |
 
-The tools land on your `PATH` (`lx_export.py`, `lx_disasm.py`, `inf2txt.sh`, `kdb_cmd.py`,
-`os2-lib` ...).
+The tools land on your `PATH` (`lx_export.py`, `lx_disasm.py`, `lx_resolve_imports.py`,
+`driver_re.py`, `inf2txt.sh`, `ddk_unpack.py`, `kdb_cmd.py`, `os2-lib` ...).
 
 **Your OS/2 material** - IBM books, the Toolkit and DDK, sources, install media, RE output - goes
 into a local **OS/2 library** the plugin manages ([`PATHS.md`](PATHS.md)). Tell Claude what you have
@@ -55,7 +55,7 @@ them. Findings go into the checkout via `os2-toolkit:contribute`.
 | `os2ref/` | 43 pristine, project-agnostic OS/2 reference docs - internals, the full app API surface, and (in `klibc-runtime-glue.md`) how the kLIBC/LIBC Next POSIX compatibility layer maps Unix-style fd/`fork`/signal/`malloc`/socket semantics onto it, for porting GCC/Unix code. `os2ref/README.md` is the router. |
 | `skills/` | The plugin's skills: `os2-dev` (map + disciplines), `setup`, `contribute`. |
 | `bin/` | `PATH` shims for the tools and corpus scripts. |
-| `tools/` | `inf2txt/` (read IBM `.INF` books as text); `lx_export` (objects/exports/imports), `lx_disasm` (disassemble at symbol/VA/`object:offset`), `lx_entry_parms` (per-ordinal parameter words), `sym2map` (`.SYM` -> addresses), `ne_profile` (16-bit NE) to inspect binaries; `kdb_*` (drive the OS/2 kernel debugger). |
+| `tools/` | `inf2txt/` (read IBM `.INF` books as text); `ddk_unpack` (merge the DDK's packages into one greppable tree); `lx_export` (objects/exports/imports), `lx_disasm` (disassemble at symbol/VA/`object:offset`), `lx_entry_parms` (per-ordinal parameter words), `lx_resolve_imports` (name a fixup's target), `lx_symmatch` (does this `.SYM` belong to this image?), `sym2map` (`.SYM` -> addresses), `ne_profile` (16-bit NE), `extract_omf_lib_ordinals` (ordinal -> API name), `driver_re` (dissect a device driver) to inspect binaries; `kdb_*` (drive the OS/2 kernel debugger); `ghidra/` (headless LX and NE decompile pipelines). |
 | `corpus/` | Scripts to build a **local** searchable corpus of the IBM books/redbooks/EDM2 on your own machine; `ingest` uses them, and `search.sh` works without the plugin. Ships none of that material. |
 | `recipes/` | Install / build / test / debug how-tos. |
 | `scaffolds/` | Starter skeletons (a PM app, a console app). |
@@ -84,8 +84,10 @@ build is therefore a GPLv2 combined work: yours to use freely, but redistributab
 with corresponding source. Building it locally rather than receiving it from us keeps that your
 choice. See [`tools/inf2txt/README.md`](tools/inf2txt/README.md).
 
-Two tools also shell out to programs you supply: `lx_disasm.py` needs `ndisasm` (NASM), and
-`kdb_cmd.py` needs `VBoxManage` (VirtualBox). Both fail with a clear message if absent.
+Some tools shell out to programs you supply: `lx_disasm.py` and `driver_re.py` need `ndisasm`
+(NASM), `kdb_cmd.py` needs `VBoxManage` (VirtualBox), `ddk_unpack.py` needs Info-ZIP `unzip` (the
+DDK's oldest packages use compression methods Python's `zipfile` cannot decompress), and the
+`tools/ghidra/` pipelines need Ghidra via `$GHIDRA_HOME`. Each fails with a clear message if absent.
 
 ## License
 

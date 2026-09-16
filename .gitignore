@@ -17,3 +17,6 @@ tools/inf2txt/*.rsj
 
 # local agent/editor state - never publish
 .claude/
+
+# pipeline output from tools/ghidra - decompiler output never belongs in the repo
+ghidra-out/
