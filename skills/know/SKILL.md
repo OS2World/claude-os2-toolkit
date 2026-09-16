@@ -100,7 +100,12 @@ Three rules the tool enforces, each paid for:
   in that project's own docs. Recording where *you* looked is different - that
   is what the search ledger is for, and it is project state by nature.
 
-Provenance tags are the ones ratified in `${CLAUDE_PLUGIN_ROOT}/os2ref/README.md`;
+Provenance tags follow `${CLAUDE_PLUGIN_ROOT}/os2ref/README.md` - `[DOC-IBM]`, `[OBS-RE]`,
+`[DOC]`, `[SRC]` - with two store-only refinements: `[OBS]` for a capture off a running
+system and `[OBS-USER]` for a firsthand observation with no capture kept, which fail
+differently from an interpretation of a binary and so cannot share `[OBS-RE]`. The README's
+`[unverified]` has no place here: a row without a citation is refused outright, so there is
+nothing for it to mark.
 the tool refuses combinations that contradict them, and no automated run may
 raise a tag on its own.
 

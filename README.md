@@ -29,6 +29,7 @@ routes into the reference, verifies against the headers, and writes the code.
 | `os2-toolkit:contribute` | Write a finding back into your checkout, provenance-tagged and de-identified. |
 | `os2-toolkit:ingest` | File OS/2 material you mention (a downloaded PDF, a folder of books, an SDK) into your local OS/2 library - see [`PATHS.md`](PATHS.md). |
 | `os2-toolkit:know` | The knowledge cache: search it before the books, and record what a session established - including what it searched for and did *not* find. |
+| `os2-toolkit:os2-review` | Dispatch the `os2-reviewer` agent: a grounded, graded (A-F) review of a change touching OS/2 semantics, or a cheap citations-only pass. |
 
 The tools land on your `PATH` (`lx_export.py`, `lx_disasm.py`, `lx_resolve_imports.py`,
 `driver_re.py`, `inf2txt.sh`, `ddk_unpack.py`, `kdb_cmd.py`, `os2-lib`, `know` ...).
@@ -56,6 +57,7 @@ them. Findings go into the checkout via `os2-toolkit:contribute`.
 | `os2ref/` | 43 pristine, project-agnostic OS/2 reference docs - internals, the full app API surface, and (in `klibc-runtime-glue.md`) how the kLIBC/LIBC Next POSIX compatibility layer maps Unix-style fd/`fork`/signal/`malloc`/socket semantics onto it, for porting GCC/Unix code. `os2ref/README.md` is the router. |
 | `skills/` | The plugin's skills: `os2-dev` (map + disciplines), `setup`, `contribute`. |
 | `bin/` | `PATH` shims for the tools and corpus scripts. |
+| `agents/` | `os2-reviewer`: a read-only adversarial reviewer that grounds itself in primary OS/2 sources before grading. |
 | `hooks/` | A `PreToolUse` nudge: a broad grep of the reference material is blocked once, pointing at the knowledge cache. One-shot, opt out with `# know-miss`, and it fails open. |
 | `tools/` | `inf2txt/` (read IBM `.INF` books as text); `ddk_unpack` (merge the DDK's packages into one greppable tree); `lx_export` (objects/exports/imports), `lx_disasm` (disassemble at symbol/VA/`object:offset`), `lx_entry_parms` (per-ordinal parameter words), `lx_resolve_imports` (name a fixup's target), `lx_symmatch` (does this `.SYM` belong to this image?), `sym2map` (`.SYM` -> addresses), `ne_profile` (16-bit NE), `extract_omf_lib_ordinals` (ordinal -> API name), `driver_re` (dissect a device driver) to inspect binaries; `kdb_*` (drive the OS/2 kernel debugger); `ghidra/` (headless LX and NE decompile pipelines); `know` (the knowledge cache over your library). |
 | `corpus/` | Scripts to build a **local** searchable corpus of the IBM books/redbooks/EDM2 on your own machine; `ingest` uses them, and `search.sh` works without the plugin. Ships none of that material. |

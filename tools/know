@@ -86,7 +86,10 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 # store that requires a citation and a re-runnable verify command exists to
 # prevent. os2ref/README.md explains the split from the other side; this note is
 # here because the wrong fix would be made at THIS site.
-PROV = ("DOC-IBM", "OBS-RE", "OBS", "OBS-USER", "INF", "DOC")
+PROV = ("DOC-IBM", "OBS-RE", "OBS", "OBS-USER", "SRC", "INF", "DOC")
+# [SRC] is ratified in os2ref/README.md and was missing here: source read from a
+# component that runs ON OS/2 without being OS/2 (kLIBC and the like). It is
+# authoritative for what that component does, never for what the platform does.
 
 # WHAT A VERIFICATION ACTUALLY ESTABLISHES. `verify_cmd` alone cannot tell
 # knowledge from circularity: a row can cite one of our own documents and
@@ -144,6 +147,7 @@ TAG_EXPECTS = {
     # recollection without changing what the ORIGINAL observation was, so the
     # tag stays [OBS-USER] while the corroboration strengthens.
     "OBS-USER": {"self", "measured"},
+    "SRC":     {"self", "two-source", "measured"},
     "DOC":     {"ibm-doc", "re", "two-source"},
     "INF":     set(CORROB),
 }
