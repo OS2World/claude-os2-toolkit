@@ -41,8 +41,14 @@ fi
 
 # Note: the exit status of this pipeline is the last stage's, not inf2txt's; the
 # -x check above is the portable guard (set -o pipefail is not POSIX sh).
+# The extractor also emits IPF control bytes that are not text: BEL (0x07) marks
+# a list bullet, with a few other C0 codes scattered through. Left in, they make
+# `file` call the output data and GNU grep treat it as binary -- the same silent
+# empty-result failure the transcode above exists to prevent -- and they are not
+# characters any reader wants. Dropped here; tab, newline and CR are kept.
 "$bin" "$1" \
  | sed -E 's/<[^>]*>//g' \
+ | tr -d '\000-\010\013\014\016-\037' \
  | sed -E 's/[ \t]+$//' \
  | cat -s \
  | $conv
