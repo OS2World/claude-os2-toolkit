@@ -1,0 +1,430 @@
+#!/usr/bin/env bash
+# track - the work queue, over a Gitea instance's issue API.
+#
+# ONE COPY OF THIS TOOL SERVES EVERY PROJECT ON THE MACHINE. It is a plugin
+# tool, not a file to copy into a project tree: which tracker it talks to is
+# resolved at run time from the environment, from the project you are standing
+# in, or from your user default - never from a line edited into this script.
+# The setup recipe and the reasons are in the `track` skill.
+#
+# CONFIG, FIRST HIT WINS:
+#
+#   1. the environment                         TRACK_URL TRACK_REPO TRACK_TOKEN
+#   2. .os2track in the working directory or any ancestor   URL and REPO ONLY
+#   3. ${XDG_CONFIG_HOME:-~/.config}/os2-toolkit/track.env  the user default
+#
+# A file fills only names still UNSET, so the environment really does win. That
+# is a measured fix, not a preference: the tool this one descends from sourced
+# its config files with `.`, so an assignment in a later file overwrote an
+# earlier one and the documented order ran backwards - a wrong TRACK_REPO in the
+# environment was silently ignored and the old repo answered instead.
+#
+# Settings:
+#   TRACK_URL     the Gitea instance's base URL
+#   TRACK_REPO    OWNER/REPO - the repository used as this project's work queue
+#   TRACK_TOKEN   a Gitea access token. write:issue,read:repository is enough
+#                 for every verb but `init`, which also needs write:user AND
+#                 write:repository (measured: POST /user/repos is refused with
+#                 write:repository alone, required=[write:user]).
+#
+# THE TOKEN IS A SECRET AND THIS TOOL TREATS IT AS ONE. It travels in an
+# Authorization header, never in a URL, and it is never printed - not in a
+# message, not in an error, not in --help. Keep it in the user config file,
+# which this tool creates mode 600 and refuses to read if it is group- or
+# world-readable. NEVER put a token in a project's .os2track: that file is in a
+# working tree and belongs to the project, so it carries URL and REPO only.
+#
+# THE TRACKER HOLDS WORK STATE ONLY. A durable OS/2 fact belongs in the
+# reference and in the knowledge cache (`know add` / `know absent`), not in a
+# ticket - a ticket about an OS/2 fact is stale the moment it is closed, and the
+# fact is lost with it. Closing is an explicit act by whoever finished the work;
+# there is no commit hook, and the tracker knows nothing about your VCS.
+set -euo pipefail
+
+PROJECT_FILE=.os2track
+
+die() { echo "track: $*" >&2; exit 1; }
+
+user_config() {
+    printf '%s/os2-toolkit/track.env' "${XDG_CONFIG_HOME:-$HOME/.config}"
+}
+
+# load_env FILE [--no-token] - read KEY=value lines, fill only names still unset
+load_env() {
+    local f="$1" no_token="${2:-}" line k v mode
+    [ -r "$f" ] || return 0
+    # A file that may hold a token must not be readable by anyone else. Checked
+    # before it is read, so a bad mode is reported instead of being used.
+    if [ -z "$no_token" ]; then
+        mode=$(stat -c '%a' "$f" 2>/dev/null || echo "")
+        case ${mode:-600} in
+            *[0-9][1-7]|*[1-7][0-7]) die "$f is readable by group or others; it holds an API token. Fix it with: chmod 600 $f";;
+        esac
+    fi
+    while IFS= read -r line || [ -n "$line" ]; do
+        case $line in ''|'#'*) continue;; *=*) ;; *) continue;; esac
+        k=${line%%=*}; v=${line#*=}
+        k=${k%"${k##*[![:space:]]}"}; k=${k#"${k%%[![:space:]]*}"}
+        v=${v#\"}; v=${v%\"}; v=${v#\'}; v=${v%\'}
+        case $k in
+            TRACK_TOKEN)
+                [ -z "$no_token" ] || die "$f sets TRACK_TOKEN. A project file is in a working tree: it carries TRACK_URL and TRACK_REPO only. Move the token to $(user_config) (mode 600)."
+                [ -n "${TRACK_TOKEN:-}" ] || printf -v TRACK_TOKEN '%s' "$v";;
+            TRACK_URL|TRACK_REPO)
+                [ -n "${!k:-}" ] || printf -v "$k" '%s' "$v";;
+        esac
+    done < "$f"
+}
+
+# The nearest .os2track at or above the working directory.
+find_project_file() {
+    local d; d=$(pwd -P)
+    while :; do
+        [ -e "$d/$PROJECT_FILE" ] && { printf '%s' "$d/$PROJECT_FILE"; return 0; }
+        [ "$d" = "/" ] && return 1
+        d=$(dirname "$d")
+    done
+}
+
+CONFIG_LOADED=0
+load_config() {
+    [ "$CONFIG_LOADED" = 0 ] || return 0
+    CONFIG_LOADED=1
+    local pf
+    pf=$(find_project_file) && load_env "$pf" --no-token
+    load_env "$(user_config)"
+}
+
+# Unset config fails BY NAME, saying what is missing and where to put it. It
+# never falls through to a request against an empty URL, which reads as the
+# server saying nothing rather than as nothing having been asked.
+CONFIG_OK=0
+require_config() { # require_config [NAME...] - default: all three
+    [ "$CONFIG_OK" = 0 ] || return 0
+    load_config
+    # `init` is the verb that CREATES a project's queue, so it cannot require
+    # TRACK_REPO: that is the value it writes. Demanding it made a new user's
+    # first command unrunnable from a clean config, and reported the fault as
+    # "unset: TRACK_REPO" even when the real error was a missing -p.
+    local want="${*:-TRACK_URL TRACK_REPO TRACK_TOKEN}" missing= n
+    for n in $want; do
+        case $n in
+            TRACK_URL)   [ -n "${TRACK_URL:-}" ]   || missing="$missing TRACK_URL";;
+            TRACK_REPO)  [ -n "${TRACK_REPO:-}" ]  || missing="$missing TRACK_REPO";;
+            TRACK_TOKEN) [ -n "${TRACK_TOKEN:-}" ] || missing="$missing TRACK_TOKEN";;
+        esac
+    done
+    if [ -n "$missing" ]; then
+        {
+            echo "track: not configured - unset:$missing"
+            echo "  TRACK_URL   the Gitea instance's base URL"
+            echo "  TRACK_REPO  OWNER/REPO, this project's work queue"
+            echo "  TRACK_TOKEN a Gitea access token (write:issue,read:repository)"
+            echo "Set them, first hit wins:"
+            echo "  1. the environment"
+            echo "  2. $PROJECT_FILE in this directory or an ancestor - TRACK_URL and TRACK_REPO only,"
+            echo "     never a token, because that file lives in the project's working tree"
+            echo "  3. $(user_config) - the user default, mode 600 (TRACK_URL, TRACK_TOKEN)"
+            echo "'track init -p OWNER/REPO -c COMP[,COMP...]' creates a tracker and writes both."
+        } >&2
+        exit 1
+    fi
+    case ${TRACK_REPO:-} in
+        "") ;;   # not required by this verb (init creates it)
+        */*) ;;
+        *) die "TRACK_REPO must be OWNER/REPO, not '$TRACK_REPO'";;
+    esac
+    CONFIG_OK=1
+}
+
+msg() { jq -r 'if type=="object" and has("message") then .message else . end' <<<"$1" 2>/dev/null || printf '%s' "$1"; }
+
+# api_raw never dies: API_CODE / API_BODY are for the caller to judge (init
+# needs a 404). The token goes in a header - never in the URL, which would put
+# it in the server's access log and in anything that echoes a failing command.
+API_CODE=; API_BODY=
+api_raw() { # api_raw METHOD /path-under-api/v1 [json]
+    require_config
+    local m="$1" p="$2" out; shift 2
+    out=$(curl -sS -X "$m" -H "Authorization: token $TRACK_TOKEN" -H 'Content-Type: application/json' \
+               ${1:+-d "$1"} -w '\n%{http_code}' "$TRACK_URL/api/v1$p") || die "curl failed: $m $p"
+    API_CODE=${out##*$'\n'}; API_BODY=${out%$'\n'*}
+}
+# api dies on anything but 2xx, naming the call and Gitea's own message - a
+# wrong repo used to surface as a jq indexing error on the {"message":"..."}
+# body, which reads as a bug in this tool rather than as a misconfiguration.
+api() { # api METHOD /path-under-the-repo [json] -> body on stdout
+    local m="$1" p="$2"; shift 2
+    api_raw "$m" "/repos/$TRACK_REPO$p" "$@"
+    case $API_CODE in 2*) printf '%s\n' "$API_BODY";; *) die "$m $TRACK_REPO$p -> HTTP $API_CODE: $(msg "$API_BODY")";; esac
+}
+# Gitea caps a page at MAX_RESPONSE_ITEMS (50 by default) and says so nowhere in
+# the response, so a single request silently truncates. Always page to exhaustion.
+api_all() { # api_all PATH_WITH_QUERY -> concatenated JSON array
+    local p="$1" page=1 chunk all='[]'
+    while :; do
+        chunk=$(api GET "$p&page=$page&limit=50")
+        [ "$(jq 'length' <<<"$chunk")" -gt 0 ] || break
+        all=$(jq -s 'add' <(echo "$all") <(echo "$chunk"))
+        [ "$(jq 'length' <<<"$chunk")" -eq 50 ] || break
+        page=$((page+1))
+    done
+    echo "$all"
+}
+label_ids() { # names, comma-separated -> [1,2]
+    api GET /labels | jq -c --arg want "$1" \
+      '($want|split(",")) as $w | [.[] | select(.name as $n | $w|index($n)) | .id]'
+}
+
+# Asking for help is not an error, so `--help` prints to stdout and exits 0,
+# while a missing or unknown verb prints the same text to stderr and exits 2 -
+# which is the difference a caller testing the exit code is looking for.
+usage_text() {
+cat <<'USAGE'
+track - file, find, comment on and close work items on a Gitea issue tracker.
+
+track new    -c COMPONENT -t TYPE -T TITLE [-m BODY]   (body also read from stdin)
+track ls     [-c COMPONENT] [-t TYPE] [-s open|closed|all]
+track show   N
+track search QUERY
+track comment N -m TEXT                                (text also read from stdin)
+track close  N [-m TEXT]
+track reopen N
+track label  N -c COMPONENT [-t TYPE]
+track labels
+track init   -p OWNER/REPO -c COMP[,COMP...] [--project-dir DIR] [--dry-run]
+             create a project's tracker: the repository (issues only), the three
+             type labels, its component labels, the user config, and with
+             --project-dir that project's .os2track. Idempotent.
+             Needs a token with write:user AND write:repository as well.
+
+TYPE is one of: defect, task, knowledge-gap. COMPONENT is a subsystem label
+this project's tracker defines - `track labels` lists both kinds.
+
+Config, first hit wins: the environment (TRACK_URL, TRACK_REPO, TRACK_TOKEN) ->
+.os2track in this directory or an ancestor (TRACK_URL and TRACK_REPO only, never
+a token) -> ${XDG_CONFIG_HOME:-~/.config}/os2-toolkit/track.env (mode 600).
+A file fills only names still unset, so the environment wins.
+
+The tracker holds WORK STATE. A durable OS/2 fact goes to `know add`, and a
+question that was answered rather than fixed goes to `know absent` - not here.
+USAGE
+}
+usage()      { usage_text >&2; exit 2; }
+usage_help() { usage_text; exit 0; }
+
+cmd="${1:-}"; shift || usage
+case "$cmd" in -h|--help|help) usage_help;; esac
+
+# An unrecognised verb is a usage error, not a configuration error, so it is
+# caught BEFORE config is resolved: a typo on an unconfigured machine should
+# print the verb list and exit 2, not report three settings the typo never
+# needed.
+case "$cmd" in
+    new|ls|show|search|comment|close|reopen|label|labels|init) ;;
+    *) usage;;
+esac
+
+# CONFIG IS RESOLVED HERE, IN THE PARENT SHELL, BEFORE ANY VERB RUNS. A verb's
+# API calls happen inside command substitutions and pipelines, and an `exit`
+# there leaves only the subshell: the failure would be printed and the tool
+# would still exit 0. Resolving up front also means an unset setting is reported
+# once, by name, instead of surfacing as an unbound-variable error from whatever
+# line first expands $TRACK_REPO into a path.
+# Resolve config once, in the parent shell: an API call sits inside a pipeline
+# or a command substitution, so a die() in there would kill only the subshell
+# and the verb would report success. `init` is the exception - it CREATES a
+# project's queue, so it cannot demand TRACK_REPO, the value it writes.
+case $cmd in
+    init) require_config TRACK_URL TRACK_TOKEN;;
+    *)    require_config;;
+esac
+
+case "$cmd" in
+new)
+    comp= type= title= body=
+    while getopts ":c:t:T:m:" o; do case $o in
+        c) comp=$OPTARG;; t) type=$OPTARG;; T) title=$OPTARG;; m) body=$OPTARG;;
+        *) die "new: bad or incomplete option -$OPTARG (see: track --help)";; esac; done
+    [ -n "$comp" ] && [ -n "$type" ] && [ -n "$title" ] || die "new needs -c COMPONENT -t TYPE -T TITLE"
+    [ -n "$body" ] || { [ -t 0 ] || body=$(cat); }
+    ids=$(label_ids "$comp,$type")
+    [ "$(jq 'length' <<<"$ids")" -eq 2 ] || die "unknown component/type (see: track labels)"
+    api POST /issues "$(jq -n --arg t "$title" --arg b "$body" --argjson l "$ids" \
+        '{title:$t, body:$b, labels:$l}')" | jq -r '"#\(.number)  \(.title)"'
+    ;;
+ls)
+    comp= type= state=open
+    while getopts ":c:t:s:" o; do case $o in
+        c) comp=$OPTARG;; t) type=$OPTARG;; s) state=$OPTARG;;
+        *) die "ls: bad or incomplete option -$OPTARG (see: track --help)";; esac; done
+    case $state in open|closed|all) ;; *) die "ls: -s takes open, closed or all";; esac
+    labels=$(printf '%s' "${comp:+$comp}${comp:+${type:+,}}${type:+$type}")
+    api_all "/issues?state=$state&type=issues${labels:+&labels=$labels}" \
+      | jq -r '.[] | "#\(.number)\t\(.state)\t\([.labels[].name]|join(","))\t\(.title)"'
+    ;;
+show)
+    n="${1:-}"
+    case $n in '') die "show needs an issue number, e.g. track show 41";;
+                 *[!0-9]*) die "show: '$n' is not an issue number";; esac
+    api GET "/issues/$n" | jq -r '"#\(.number)  \(.title)\nstate:  \(.state)\nlabels: \([.labels[].name]|join(", "))\nopened: \(.created_at)\n\n\(.body)"'
+    api GET "/issues/$n/comments" | jq -r '.[] | "\n--- comment \(.created_at) ---\n\(.body)"'
+    ;;
+search)
+    q="${1:-}"; [ -n "$q" ] || die "search needs a query, e.g. track search 'forwarder fixup'"
+    api_all "/issues?state=all&type=issues&q=$(jq -rn --arg q "$q" '$q|@uri')" \
+      | jq -r '.[] | "#\(.number)\t\(.state)\t\(.title)"'
+    ;;
+comment)
+    n="${1:-}"
+    case $n in '') die "comment needs an issue number, e.g. track comment 41 -m TEXT";;
+                 *[!0-9]*) die "comment: '$n' is not an issue number";; esac
+    shift; m=
+    while getopts ":m:" o; do case $o in m) m=$OPTARG;; *) die "comment: bad or incomplete option -$OPTARG (see: track --help)";; esac; done
+    [ -n "$m" ] || { [ -t 0 ] && die "comment needs -m TEXT, or text on stdin"; m=$(cat); }
+    [ -n "$m" ] || die "comment needs -m TEXT, or text on stdin"
+    api POST "/issues/$n/comments" "$(jq -n --arg b "$m" '{body:$b}')" >/dev/null
+    echo "commented on #$n"
+    ;;
+close)
+    n="${1:-}"
+    case $n in '') die "close needs an issue number, e.g. track close 41 -m TEXT";;
+                 *[!0-9]*) die "close: '$n' is not an issue number";; esac
+    shift || true; m=
+    while getopts ":m:" o; do case $o in m) m=$OPTARG;; *) die "close: bad or incomplete option -$OPTARG (see: track --help)";; esac; done
+    # if/then, not `[ ... ] && ...`: under `set -e` a false test at the end of an
+    # AND-list exits the script, so `track close N` with no -m would stop here.
+    if [ -n "$m" ]; then api POST "/issues/$n/comments" "$(jq -n --arg b "$m" '{body:$b}')" >/dev/null; fi
+    api PATCH "/issues/$n" '{"state":"closed"}' | jq -r '"#\(.number) closed: \(.title)"'
+    ;;
+reopen)
+    n="${1:-}"
+    case $n in '') die "reopen needs an issue number, e.g. track reopen 41";;
+                 *[!0-9]*) die "reopen: '$n' is not an issue number";; esac
+    api PATCH "/issues/$n" '{"state":"open"}' | jq -r '"#\(.number) reopened: \(.title)"'
+    ;;
+label)
+    # Re-file an issue: swap its COMPONENT and/or TYPE, keep the other.
+    # Gitea's PATCH replaces the WHOLE label set, so the surviving label has to
+    # be computed and sent back - dropping it is silent, not an error.
+    # A label is a COMPONENT iff its description is "subsystem"; that is the
+    # repo's own convention and the only thing distinguishing the two kinds.
+    n="${1:-}"
+    case $n in '') die "label needs an issue number, e.g. track label 41 -c COMPONENT";;
+                 *[!0-9]*) die "label: '$n' is not an issue number";; esac
+    shift; comp= type=
+    while getopts ":c:t:" o; do case $o in c) comp=$OPTARG;; t) type=$OPTARG;; *) die "label: bad or incomplete option -$OPTARG (see: track --help)";; esac; done
+    [ -n "$comp" ] || [ -n "$type" ] || die "label needs -c COMPONENT and/or -t TYPE"
+    all=$(api GET /labels)
+    cur=$(api GET "/issues/$n" | jq -c '[.labels[].name]')
+    want=$(jq -cn --argjson all "$all" --argjson cur "$cur" \
+                 --arg comp "$comp" --arg type "$type" '
+        ($all | map(select(.description=="subsystem") | .name)) as $comps |
+        ($cur | map(select(. as $x | $comps|index($x)) )) as $curcomp |
+        ($cur | map(select(. as $x | $comps|index($x)|not))) as $curtype |
+        (if $comp != "" then [$comp] else $curcomp end) +
+        (if $type != "" then [$type] else $curtype end) | unique')
+    ids=$(label_ids "$(jq -r 'join(",")' <<<"$want")")
+    [ "$(jq 'length' <<<"$ids")" -eq "$(jq 'length' <<<"$want")" ] \
+        || die "unknown component/type (see: track labels)"
+    # MEASURED: PATCH /issues/N SILENTLY IGNORES a labels field - it answers 200
+    # with the OLD label set and no error, so a relabel through it reports
+    # success and changes nothing. PUT /issues/N/labels is the endpoint that
+    # works. Do not "simplify" this back into the PATCH above.
+    api PUT "/issues/$n/labels" "$(jq -n --argjson l "$ids" '{labels:$l}')" \
+        | jq -r '"#'"$n"' -> \([.[].name]|join(", "))"'
+    ;;
+labels)
+    api GET /labels | jq -r '.[] | "\(.name)\t\(.description)"' | sort
+    ;;
+init)
+    # Create a project's tracker. Every step is idempotent: an existing repo,
+    # label or config file is reported and kept. The three TYPE labels are
+    # defect, task and knowledge-gap; a COMPONENT label is one whose description is
+    # exactly "subsystem" - `track label` keys on that and nothing else.
+    repo= comps= project_dir= dry=0
+    while [ $# -gt 0 ]; do case $1 in
+        -p) repo=${2:?}; shift 2;; -c) comps=${2:?}; shift 2;;
+        --project-dir) project_dir=${2:?}; shift 2;; --dry-run) dry=1; shift;;
+        *) die "init: unknown argument $1";; esac; done
+    [ -n "$repo" ] && [ "${repo#*/}" != "$repo" ] || die "init needs -p OWNER/REPO"
+    [ -n "$comps" ] || die "init needs -c COMP[,COMP...]"
+    [ -z "$project_dir" ] || [ -d "$project_dir" ] || die "--project-dir $project_dir: not a directory"
+    owner=${repo%%/*}; name=${repo#*/}
+    say() { echo "init: $*"; }
+    write() { # write METHOD PATH JSON - a mutation; printed, not sent, under --dry-run
+        if [ "$dry" = 1 ]; then say "DRY-RUN $1 $2 $3"; API_CODE=200; API_BODY='{}'; return 0; fi
+        api_raw "$@"; case $API_CODE in 2*) ;; *) die "$1 $2 -> HTTP $API_CODE: $(msg "$API_BODY")";; esac
+    }
+
+    # 1. the repository, under the token's own user (POST /user/repos)
+    api_raw GET "/repos/$repo"
+    case $API_CODE in
+        200) say "repo $repo exists";;
+        404) say "creating repo $repo"
+             write POST /user/repos "$(jq -nc --arg n "$name" '{name:$n, auto_init:false, description:"work queue - issues only"}')"
+             if [ "$dry" = 0 ]; then
+                 got=$(jq -r '.owner.login + "/" + .name' <<<"$API_BODY")
+                 [ "$got" = "$repo" ] || die "created $got, not $repo: the token's user is not $owner"
+             fi;;
+        *) die "GET /repos/$repo -> HTTP $API_CODE: $(msg "$API_BODY")";;
+    esac
+
+    # 2. issues only. A Gitea whose DEFAULT_REPO_UNITS is already repo.issues
+    #    makes this a no-op; the PATCH makes the result the same on one that is
+    #    configured otherwise.
+    api_raw GET "/repos/$repo"
+    if [ "$API_CODE" = 200 ]; then
+        units='has_wiki has_pull_requests has_projects has_releases has_packages has_actions'
+        on=$(jq -r --arg u "$units" '[($u|split(" "))[] as $k | select(.[$k]==true) | $k] | join(",")' <<<"$API_BODY")
+        if [ -n "$on" ] || [ "$(jq -r .has_issues <<<"$API_BODY")" != true ]; then
+            say "units: switching off ${on:-nothing}, issues on"
+            write PATCH "/repos/$repo" '{"has_issues":true,"has_wiki":false,"has_pull_requests":false,"has_projects":false,"has_releases":false,"has_packages":false,"has_actions":false}'
+        else
+            say "units: issues only"
+        fi
+    else
+        say "units: (repo not created under --dry-run, skipped)"
+    fi
+
+    # 3. labels: the three types, then this project's components
+    have=; api_raw GET "/repos/$repo/labels?limit=50"
+    if [ "$API_CODE" = 200 ]; then have=$(jq -r '.[].name' <<<"$API_BODY"); fi
+    want=$(printf 'defect\tb60205\tsomething is wrong\ntask\t0e8a16\twork to do, nothing broken\nknowledge-gap\t5319e7\tanswered rather than fixed\n'
+           printf '%s\n' "${comps//,/$'\n'}" | sed '/^$/d; s/$/\t1d76db\tsubsystem/')
+    while IFS=$'\t' read -r lname lcolor ldesc; do
+        if grep -qxF "$lname" <<<"$have"; then say "label $lname exists"; continue; fi
+        say "label $lname ($ldesc)"
+        write POST "/repos/$repo/labels" "$(jq -nc --arg n "$lname" --arg c "#$lcolor" --arg d "$ldesc" '{name:$n, color:$c, description:$d}')"
+    done <<<"$want"
+
+    # 4. the user config: the instance and the token, which are per USER, not
+    #    per project - a Gitea token is minted for an account and reaches every
+    #    repo that account owns. The repo is NOT written here: that is the one
+    #    setting that differs per project, and it belongs in the project.
+    cfg=$(user_config)
+    if [ -e "$cfg" ]; then say "config $cfg exists, left alone"
+    elif [ "$dry" = 1 ]; then say "DRY-RUN write $cfg (mode 600)"
+    else mkdir -p "$(dirname "$cfg")"
+         ( umask 077; printf 'TRACK_URL=%s\nTRACK_TOKEN=%s\n' "$TRACK_URL" "$TRACK_TOKEN" > "$cfg" )
+         chmod 600 "$cfg"
+         say "wrote $cfg (mode 600)"
+    fi
+
+    # 5. the project's own file: URL and REPO, and NO TOKEN - it lives in a
+    #    working tree, where a secret would be committed, shared and mirrored.
+    if [ -n "$project_dir" ]; then
+        pf="$project_dir/$PROJECT_FILE"
+        if [ -e "$pf" ]; then say "$pf exists, left alone"
+        elif [ "$dry" = 1 ]; then say "DRY-RUN write $pf"
+        else printf '# This project'"'"'s work queue. No secrets here - the token lives in\n# %s (mode 600).\nTRACK_URL=%s\nTRACK_REPO=%s\n' "$cfg" "$TRACK_URL" "$repo" > "$pf"
+             say "wrote $pf (TRACK_REPO=$repo)"
+        fi
+    else
+        say "next: in the project's directory, write $PROJECT_FILE with TRACK_URL and TRACK_REPO=$repo"
+        say "      (or re-run with --project-dir DIR). No token in that file."
+    fi
+    say "done: $repo"
+    ;;
+*) usage;;
+esac

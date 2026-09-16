@@ -28,11 +28,12 @@ routes into the reference, verifies against the headers, and writes the code.
 | `os2-toolkit:setup` | Wire a project up, or migrate one that used a copied kit. |
 | `os2-toolkit:contribute` | Write a finding back into your checkout, provenance-tagged and de-identified. |
 | `os2-toolkit:ingest` | File OS/2 material you mention (a downloaded PDF, a folder of books, an SDK) into your local OS/2 library - see [`PATHS.md`](PATHS.md). |
+| `os2-toolkit:track` | File, find, comment on and close work items on a Gitea tracker - work state, as opposed to the durable facts `know` holds. |
 | `os2-toolkit:know` | The knowledge cache: search it before the books, and record what a session established - including what it searched for and did *not* find. |
 | `os2-toolkit:os2-review` | Dispatch the `os2-reviewer` agent: a grounded, graded (A-F) review of a change touching OS/2 semantics, or a cheap citations-only pass. |
 
 The tools land on your `PATH` (`lx_export.py`, `lx_disasm.py`, `lx_resolve_imports.py`,
-`driver_re.py`, `inf2txt.sh`, `ddk_unpack.py`, `kdb_cmd.py`, `os2-lib`, `know` ...).
+`driver_re.py`, `inf2txt.sh`, `ddk_unpack.py`, `kdb_cmd.py`, `os2-lib`, `know`, `track` ...).
 
 **Your OS/2 material** - IBM books, the Toolkit and DDK, sources, install media, RE output - goes
 into a local **OS/2 library** the plugin manages ([`PATHS.md`](PATHS.md)). Tell Claude what you have
@@ -59,7 +60,7 @@ them. Findings go into the checkout via `os2-toolkit:contribute`.
 | `bin/` | `PATH` shims for the tools and corpus scripts. |
 | `agents/` | `os2-reviewer`: a read-only adversarial reviewer that grounds itself in primary OS/2 sources before grading. |
 | `hooks/` | A `PreToolUse` nudge: a broad grep of the reference material is blocked once, pointing at the knowledge cache. One-shot, opt out with `# know-miss`, and it fails open. |
-| `tools/` | `inf2txt/` (read IBM `.INF` books as text); `ddk_unpack` (merge the DDK's packages into one greppable tree); `lx_export` (objects/exports/imports), `lx_disasm` (disassemble at symbol/VA/`object:offset`), `lx_entry_parms` (per-ordinal parameter words), `lx_resolve_imports` (name a fixup's target), `lx_symmatch` (does this `.SYM` belong to this image?), `sym2map` (`.SYM` -> addresses), `ne_profile` (16-bit NE), `extract_omf_lib_ordinals` (ordinal -> API name), `driver_re` (dissect a device driver) to inspect binaries; `kdb_*` (drive the OS/2 kernel debugger); `ghidra/` (headless LX and NE decompile pipelines); `know` (the knowledge cache over your library). |
+| `tools/` | `inf2txt/` (read IBM `.INF` books as text); `ddk_unpack` (merge the DDK's packages into one greppable tree); `lx_export` (objects/exports/imports), `lx_disasm` (disassemble at symbol/VA/`object:offset`), `lx_entry_parms` (per-ordinal parameter words), `lx_resolve_imports` (name a fixup's target), `lx_symmatch` (does this `.SYM` belong to this image?), `sym2map` (`.SYM` -> addresses), `ne_profile` (16-bit NE), `extract_omf_lib_ordinals` (ordinal -> API name), `driver_re` (dissect a device driver) to inspect binaries; `kdb_*` (drive the OS/2 kernel debugger); `ghidra/` (headless LX and NE decompile pipelines); `know` (the knowledge cache over your library); `track` (work items on a Gitea issue tracker). |
 | `corpus/` | Scripts to build a **local** searchable corpus of the IBM books/redbooks/EDM2 on your own machine; `ingest` uses them, and `search.sh` works without the plugin. Ships none of that material. |
 | `recipes/` | Install / build / test / debug how-tos. |
 | `scaffolds/` | Starter skeletons (a PM app, a console app). |
@@ -90,8 +91,12 @@ choice. See [`tools/inf2txt/README.md`](tools/inf2txt/README.md).
 
 Some tools shell out to programs you supply: `lx_disasm.py` and `driver_re.py` need `ndisasm`
 (NASM), `kdb_cmd.py` needs `VBoxManage` (VirtualBox), `ddk_unpack.py` needs Info-ZIP `unzip` (the
-DDK's oldest packages use compression methods Python's `zipfile` cannot decompress), and the
-`tools/ghidra/` pipelines need Ghidra via `$GHIDRA_HOME`. Each fails with a clear message if absent.
+DDK's oldest packages use compression methods Python's `zipfile` cannot decompress), the
+`tools/ghidra/` pipelines need Ghidra via `$GHIDRA_HOME`, and `track` needs `curl` and `jq`
+plus a Gitea instance of your own. Each fails with a clear message if absent.
+
+`jq` is worth installing even if you never use the tracker: the `know-first` hook parses its
+event with it, and without it the hook fails open - you lose the nudge, not the session.
 
 ## License
 

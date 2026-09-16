@@ -1,0 +1,4 @@
+#!/bin/sh
+# PATH shim (plugin bin/): runs tools/track from this checkout with the same arguments.
+root=$(dirname -- "$(dirname -- "$(readlink -f -- "$0")")")
+exec "$root/tools/track" "$@"
