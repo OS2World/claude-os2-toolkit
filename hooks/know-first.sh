@@ -194,8 +194,8 @@ only honest signal of what the cache still lacks. (This hook writes nothing -
 it is stateless; the escape is a marker, not a ledger entry.)
 
 If it DID answer and you are now checking that answer against the primary
-source, append `# know-verify` instead. Same effect here; it just keeps a
-verified hit out of the miss ledger, where it would read as a gap that is not
-one.
+source, append `# know-verify` instead. Same effect here; it just tells anyone
+reading the transcript that this was a verified hit being re-checked, not a gap
+in the cache.
 MSG
 exit 2
