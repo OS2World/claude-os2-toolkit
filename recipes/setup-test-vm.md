@@ -450,6 +450,30 @@ CLONE="os2test-$$"                  # name it after the run - the name IS the tr
 VBoxManage clonevm "$TEMPLATE" --snapshot "$SNAP" --mode machine --name "$CLONE" --register
 ```
 
+**Do not carry the template's name around in your head, or in a project's `CLAUDE.md`.** A machine
+that has done OS/2 work before usually has the template recorded in the OS/2 library already
+(`../PATHS.md` section 9: VM images are `media/` items in link mode, because the hypervisor owns
+their files), and then it is found by role like everything else - which is what keeps a project
+free of a VM name that is wrong on every other machine and stale on this one as soon as the
+template is rebuilt:
+
+```sh
+ITEM=$(dirname "$(os2-lib role vm-template)")                   # the library item
+grep -A4 '^vm:' "$ITEM/ITEM.md"                                 # hypervisor, name, role, guest
+TEMPLATE=$(sed -n '/^vm:/,/^[a-z]/ s/^  name:[[:space:]]*//p' "$ITEM/ITEM.md" | tr -d '"')
+```
+
+Read the rest of that `ITEM.md` before cloning: it is where a template's own quirks are written
+down, and the two that bite are the serial port the clone inherits (below) and which snapshot is
+current. `os2-lib role vm-template` printing nothing means no template is filed - not that none
+exists; ask, then file the one you have rather than hardcoding its name:
+
+```sh
+os2-lib new media my-os2-template --title "OS/2 test template VM" \
+    --kind vm-image --provenance own --mode link \
+    --original "$HOME/VirtualBox VMs/<the VM's directory>" --provides vm-template
+```
+
 **If the template has a debug serial port, repoint it before starting the clone.** The clone
 inherits the host pipe path (`uartmode2 server /tmp/dbgport`), so two clones - or a clone and the
 template - fight over the same socket:
