@@ -161,9 +161,25 @@ fi
 case "$lib" in "~/"*) lib="$HOME/${lib#~/}" ;; esac
 
 hit=0
-# a target under the library root, spelled literally or through the variable
+# a target under the library root, spelled literally or through the variable.
+#
+# THE ROOT MUST MATCH AT A PATH BOUNDARY, and that is the same measured defect
+# the os2-lib exemption above carries, in the opposite direction. A bare
+# `*"$lib"*` is a substring test, so a root like `<home>/os2` also matches every
+# sibling whose name merely STARTS with it - `<home>/os2dev/...`, `<home>/os2-work`
+# - and an OS/2 project directory is very often named exactly that. Measured
+# before the fix, with the root set to `<home>/os2`: `grep -n TODO
+# <home>/os2dev/aproject/NOTES.md` exited 2 where it must exit 0, so a session
+# was blocked on its OWN files and taught to reach for the escape marker on
+# commands that were never library searches. After: that command exits 0 while
+# `grep -rn DosOpen <home>/os2/docs/...`, and the bare root itself, still exit 2.
+#
+# The boundary is "the next character cannot continue a path component", which
+# admits `/`, end-of-string, a quote, a space or a shell metacharacter, and
+# rejects a letter, digit, `_`, `.` or `-`.
 case "$stripped" in
-  *"$lib"*|*'$OS2_LIBRARY'*|*'${OS2_LIBRARY}'*) hit=1 ;;
+  *"$lib"|*"$lib"[!A-Za-z0-9_.-]*) hit=1 ;;
+  *'$OS2_LIBRARY'*|*'${OS2_LIBRARY}'*) hit=1 ;;
 esac
 
 # ...or a few generic OS/2 corpus words, so material outside the library (a
