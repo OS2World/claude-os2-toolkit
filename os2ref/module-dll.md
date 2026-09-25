@@ -339,8 +339,9 @@ slots forward to IBM's original, renamed. Each item is a trap, the fact, and the
   in a USE16 object as `entry32` bundles, yet `DosQueryProcType` reports them 16-bit.
 - **Install without touching IBM's file.** `LIBPATH` is searched in order at boot too, so a DLL in
   a directory listed before `\OS2\DLL` replaces the system one; removing it restores the stock
-  module. Read `LIBPATH` from CONFIG.SYS first: on WSeB CP2 `\MUGLIB\DLL` is its first entry; eComStation 2.1
-  lists several directories before it, but still before `\OS2\DLL`.
+  module. A dedicated directory added at the front of `LIBPATH` (after a leading `.`) keeps test
+  DLLs apart from any real product's. Read `LIBPATH` from the target's own CONFIG.SYS: the systems
+  measured begin theirs with `.`, and file copies of CONFIG.SYS taken at other times did not match.
 - **A control for a module-load test needs a boot on which nothing has loaded the module.** A
   program started from a directory without the DLL still ran while another process had it loaded
   - inferred to be the loaded module satisfying the import by name; not isolated.
