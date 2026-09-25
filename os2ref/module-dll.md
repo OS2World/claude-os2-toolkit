@@ -305,6 +305,46 @@ to a target module + target export (by name or ordinal); the on-disk encoding of
 belongs to `executable-formats.md`. [DOC - the LX entry-table forwarder form; OBS-RE - the system
 DLLs that forward into `DOSCALLS`.]
 
+### Replacing a system DLL with a forwarder: measured traps [OBS]
+
+Measured on Warp Server for e-business CP2 by replacing `PMGPI.DLL` system-wide with a DLL whose
+slots forward to IBM's original, renamed. Each item is a trap, the fact, and the tell.
+
+- **Building forwarders with OpenWatcom 1.9 `wlink`.** The linker guide documents no forwarder
+  syntax, but exporting a symbol that is itself an `IMPORT` emits an LX forwarder entry with no
+  stub (`IMPORT x PMGPI.358` then `EXPORT x.358`). `ANONYMOUSEXPORT`, documented for Win16/Win32
+  only, also works for OS/2 LX and leaves the name out of both name tables - needed to reproduce a
+  module that leaves slots unnamed. Trap: with no `OPTION DESCRIPTION`, the first exported name
+  lands in the non-resident table's description slot and that ordinal loses its name. Verify with
+  `lx_export.py`: every slot should print as `forwarder`.
+- **The renamed original needs a different internal module name.** The forwarder must be named
+  `PMGPI` internally, and so is IBM's file; renaming only the file leaves two modules with one
+  name. A same-length name patched into the resident name table's first entry (`pmgpi` ->
+  `pmgpx`, one byte) avoids the clash. Check first that the module never names itself: search its
+  unpacked objects (packed pages hide strings - `executable-formats.md`), with a positive control.
+- **An all-forwarder replacement can stop the boot.** Tell: the PROTSHELL message *"The file
+  PMMERGE->PMGPI specified in the PROTSHELL statement ... does not contain a valid program"*, with
+  no return code. The same DLL loads and works at runtime. `DosLoadModule` run from a CONFIG.SYS
+  `CALL=` line, before PM, returns **180 `ERROR_INVALID_SEGMENT_NUMBER`** with failing module
+  "PMMERGE->PMGPI". Cause, as far as measured: `PMMERGE`'s 16-bit object reaches seven `PMGPI`
+  ordinals through **16:16-pointer fixups** (source type 3), and resolving those through a
+  forwarder fails at boot; giving just those seven ordinals real entries (a far `JMP` from a USE16
+  object to the original, a near `JMP` for the two 32-bit ones) makes the boot succeed. The same
+  fixups through a forwarder resolve at runtime, so the boot difference is inferred to be that the
+  target module is still inside the unfinished `PMMERGE` import cycle - not isolated further.
+  How to find such ordinals: list the importer's fixups (`lx_resolve_imports.py --kind import
+  --all-objects`) and keep the source-type-3 ones.
+- **`DosQueryProcAddr` follows a forwarder** to the final entry, 16-bit targets included, and
+  **`DosQueryProcType` takes the entry's type from the object's bitness**: Watcom writes entries
+  in a USE16 object as `entry32` bundles, yet `DosQueryProcType` reports them 16-bit.
+- **Install without touching IBM's file.** `LIBPATH` is searched in order at boot too, so a DLL in
+  a directory listed before `\OS2\DLL` replaces the system one; removing it restores the stock
+  module. Read `LIBPATH` from CONFIG.SYS first: on WSeB CP2 `\MUGLIB\DLL` is its first entry; eComStation 2.1
+  lists several directories before it, but still before `\OS2\DLL`.
+- **A control for a module-load test needs a boot on which nothing has loaded the module.** A
+  program started from a directory without the DLL still ran while another process had it loaded
+  - inferred to be the loaded module satisfying the import by name; not isolated.
+
 ---
 
 ## Where the PM APIs actually live [OBS-RE]
@@ -320,9 +360,9 @@ build, not of the API.
 | Module | What it really is |
 |---|---|
 | `PMWIN.DLL` | **Almost entirely forwarders into `PMMERGE`.** On Warp Server for e-business CP2 (XR04503) it is ~11 KB with **738 entry-table slots, every one a forwarder, and one imported module: `PMMERGE`**. It contains essentially no code. |
-| `PMGPI.DLL` | The `Gpi*` surface, likewise thin over `PMMERGE`. |
+| `PMGPI.DLL` | **Real code, not a thin layer** (corrected; an earlier revision of this row called it "likewise thin over `PMMERGE`" by analogy with `PMWIN` - natural, but wrong). On WSeB CP2: **638 entry-table slots** - 294 16-bit entries, 343 32-bit, 1 forwarder (slot 399 -> `PMMERGE`) - with only **298 names**: every 16-bit entry and 4 of the 32-bit ones. The 32-bit API (`Gpi32CharString` #358, `Gpi32QueryFontMetrics` #453, ...) is **unnamed** and bound by ordinal only, so the ordinals in `bseord.h` are the only map. Imports `PMMERGE`, `DOSCALLS`, `PMGRE`, `PMWIN` and others. [OBS-RE - `lx_export.py`, name tables read directly] |
 | `PMMERGE.DLL` | The actual window manager + GPI engine + GRE dispatch. |
-| `PMCTLS.DLL` | **Real code.** Owns the standard dialogs: `WINFONTDLG` @2, `WINDEFFONTDLGPROC` @3, `WINFILEDLG` @4, `WINDEFFILEDLGPROC` @5, `WINFREEFILEDLGLIST` @6. 254 exports, **zero** forwarders. |
+| `PMCTLS.DLL` | **Real code.** Owns the standard dialogs: `WINFONTDLG` @2, `WINDEFFONTDLGPROC` @3, `WINFILEDLG` @4, `WINDEFFILEDLGPROC` @5, `WINFREEFILEDLGLIST` @6. 287 entry-table slots (254 32-bit, 33 16-bit, 24 of them named), **zero** forwarders. Also the multi-line edit control and the container (`PMMLE.DLL` imports only `PMCTLS`). |
 | `PMSDMRI.DLL` | **Resource-only** - 0 exports, 0 imports, one read-only data object. Holds the standard dialog *templates* (the file dialog is `RT_DIALOG` id 256) and nothing else. |
 | `PMSHAPI.DLL`, `PMDRAG.DLL`, `PMWP.DLL` | Shell API, direct manipulation, Workplace Shell class API. |
 

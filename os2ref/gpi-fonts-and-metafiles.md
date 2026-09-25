@@ -310,6 +310,52 @@ behaviour from the other.
 
 ---
 
+### 2.7 Which PM text goes through GPI - and which does not [OBS / OBS-RE]
+
+**Trap:** assuming that intercepting the `Gpi*` text calls (a `PMGPI.DLL` replacement, or hooks on
+its entries) sees all the text PM draws. It does not. PM has two front doors to text, and they meet
+only at the engine's dispatch to the display driver (`GreCharStringPos`, dispatch `0x7036`).
+
+Measured on Warp Server for e-business CP2 with one window drawing a distinct marker string
+through each path, logged both by a `PMGPI` replacement and by a GRADD engine extension hooking the
+text dispatch entries (`pmddim.h` numbers) [OBS]:
+
+| Path | Reaches `PMGPI`? | Reaches the dispatch? |
+|---|---|---|
+| window title, menu bar, list box item | yes (`Gpi32CharStringPosAt`, `CHS_CLIP`, called from `PMMERGE`) | yes |
+| an application's own `GpiCharStringAt` | yes | yes |
+| WPS icon labels (container), multi-line edit control (both `PMCTLS`) | yes - the edit control with `CHS_VECTOR` and an increment array | yes |
+| `WinDrawText` | **no** | yes |
+| static text, push-button label, entry field | **no** (not even in fragments) | yes |
+| push-button label *measurement* | **yes** (`QueryTextBox`) - measured through GPI, drawn around it | yes |
+
+**The fact** [OBS-RE - decompile of WSeB `PMMERGE.DLL` with its `.SYM` names, plus a byte scan]:
+outside GPI, every text draw in `PMMERGE` runs `WIN32DRAWTEXT` (reached from `PMWIN` ordinal 913)
+or `WINDRAWTABBEDTEXT` -> an internal `DrawText` -> `OutputText`, the only `PMMERGE` function that
+issues dispatch `0x7036`. The standard controls live inside `PMMERGE` and call those two exports
+**from inside the module** - the push button and entry field `WIN32DRAWTEXT`, static text and group
+boxes `WINDRAWTABBEDTEXT` - so no forwarder DLL can see them. The 16-bit half of `PMMERGE` has no
+text path of its own: `WIN16DRAWTEXT` is a thunk into `WIN32DRAWTEXT`, and no 16-bit object
+contains a text function code. Two measurement functions call the engine directly outside that
+path (`EngGetTextExtent`, `QueryTabbedTextExtent32`); by their callers they look like seamless
+Win-OS/2 support.
+
+**Consequences:**
+- A GPI-level text renderer misses most dialog text, and **must not change what `QueryTextBox`
+  returns for text it does not also draw** - the push button would measure one way and draw another.
+- The only single place all PM text meets is the engine dispatch. Covering the `Win*` path from above
+  means patching `WIN32DRAWTEXT` and `WINDRAWTABBEDTEXT` themselves; in `PMMERGE` builds 14.057,
+  14.084 (WSeB CP2), 14.103 and 14.106 (eComStation 2.1) they are ordinals 5163 and 5432 and their
+  first instructions are identical and stack-relative only.
+
+**How to verify:** draw marker strings through each path and log what arrives; in a decompile,
+list the callers of `DrawText` and `OutputText`; scan the executable objects for the dispatch
+function codes as `push`/`mov` immediates (`0x7036` draw, `0x5037` text box, `0x5038` character
+positions), with the 32-bit object as the positive control.
+
+**The tell:** a `Gpi*` interception that changes titles and menus but leaves dialog labels,
+buttons and entry fields untouched.
+
 ## 3. Bitmaps
 
 ### 3.1 The bitmap model - handle, owning device, memory DC [DOC-IBM]
