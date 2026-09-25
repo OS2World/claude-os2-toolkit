@@ -105,12 +105,21 @@ class LXImage:
         with open(self.path, "rb") as f:
             data = f.read()
         self.data = data
-        if data[:2] != b"MZ":
-            raise ValueError("not an MZ/LX image")
-        e_lfanew = struct.unpack_from("<I", data, 0x3C)[0]
+        # An LX image may or may not carry a DOS stub, and BOTH shapes ship.
+        # The stub is optional: a DLL is never started from DOS, so many are
+        # linked without one and then the LX header begins at offset 0. Reading
+        # only the MZ form rejects those outright with "not an MZ/LX image",
+        # which reads like a corrupt file rather than a second valid layout --
+        # e.g. the ncurses tinfo6.dll shipped by netlabs is bare LX.
+        if data[:2] == b"LX":
+            e_lfanew = 0
+        elif data[:2] == b"MZ":
+            e_lfanew = struct.unpack_from("<I", data, 0x3C)[0]
+            if data[e_lfanew:e_lfanew + 2] != b"LX":
+                raise ValueError("LX signature not found at e_lfanew=0x%x" % e_lfanew)
+        else:
+            raise ValueError("not an LX image (no LX magic at 0, no MZ stub)")
         self.lx_off = e_lfanew
-        if data[e_lfanew:e_lfanew + 2] != b"LX":
-            raise ValueError("LX signature not found at e_lfanew=0x%x" % e_lfanew)
         # lx_header_t fields we need (offsets within LX header, packed)
         # objtab @ +0x40, objcnt @ +0x44, objmap @ +0x48, pageshift @ +0x2C,
         # pagesize @ +0x28, datapage @ +0x80

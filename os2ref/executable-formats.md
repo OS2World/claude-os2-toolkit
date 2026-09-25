@@ -38,6 +38,33 @@ struct exe_hdr {                    /* DOS 1/2/3 .EXE header - 64 bytes */
 ```
 [DOC-IBM - `newexe.h` `struct exe_hdr`; `E_LFANEW`]
 
+### 1.1 The DOS stub is OPTIONAL - an LX file may start at `LX` [DOC-IBM][OBS-RE]
+
+**The trap.** The paragraph above describes the usual arrangement, and it is easy to read as the
+only one: find `MZ`, follow `e_lfanew`, expect `LX` there. A loader written that way rejects a
+large class of real, valid OS/2 binaries - and it rejects them with a message like "not an MZ/LX
+image", which reads as *corrupt file* rather than *second valid layout*.
+
+**The fact.** The DOS stub is something the linker ADDS, not something the format requires.
+LINK386's `STUB` statement selects the DOS executable to place at the front, and IBM notes that
+"By default, LINK386 adds its own standard stub for this purpose" - a default, which a build may
+omit. When it is omitted the LX header IS the file, so the `LX` magic sits at **offset 0** and
+there is no `e_lfanew` to follow. This is not exotic: a DLL is never started from DOS, so nothing
+needs the stub, and shipped DLLs are found in both shapes.
+[DOC-IBM - `toolinf2.txt` "LINK386 - STUB Statement"] [OBS-RE - two shipped `tinfo6.dll` builds of
+the same library, one bare-LX and one MZ-stubbed]
+
+**How to verify.** The first two bytes decide it, with no parsing:
+
+```sh
+head -c 2 SOMEFILE.DLL | od -c      # '  L  X'  -> header at offset 0
+                                    # '  M  Z'  -> follow e_lfanew at 0x3C
+```
+
+**The tell.** A binary that `file` happily calls "LX executable for OS/2" while your own reader
+calls malformed is this, every time. Read the magic at offset 0 first, and only fall back to the
+`MZ` + `e_lfanew` path when it is not `LX`.
+
 **LX file layout** (the order in which sections appear in the file) is: DOS section (discarded)
 -> Linear EXE header -> *Loader section* (Object Table, Object Page Table, Resource Table, Resident
 Name Table, Entry Table, Module Format Directives Table, Per-Page Checksum Table) -> *Fixup section*
