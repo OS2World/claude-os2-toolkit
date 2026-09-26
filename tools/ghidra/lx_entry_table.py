@@ -56,7 +56,19 @@ import sys
 def load(path):
     with open(path, "rb") as f:
         data = f.read()
-    e_lfanew = struct.unpack_from("<I", data, 0x3C)[0]
+    # The DOS stub is OPTIONAL. A bare LX carries its magic at offset 0 with no MZ
+    # header at all -- netlabs ships several (the ncurses tinfo6.dll and the gcc
+    # runtime gcc1.dll among them). Demanding MZ first rejects those as a corrupt
+    # file rather than as the second valid layout they are.
+    # See os2ref/executable-formats.md section 1.1.
+    # (Duplicated rather than imported: this module runs headless under Ghidra,
+    # where the rest of tools/ is not on sys.path.)
+    if data[:2] == b"LX":
+        e_lfanew = 0
+    elif len(data) >= 0x40 and data[:2] in (b"MZ", b"ZM"):
+        e_lfanew = struct.unpack_from("<I", data, 0x3C)[0]
+    else:
+        raise ValueError("not an LX image (no LX magic at 0, no MZ stub)")
     h = e_lfanew
     if data[h:h + 2] != b"LX":
         raise ValueError("not an LX image (no LX signature at e_lfanew)")

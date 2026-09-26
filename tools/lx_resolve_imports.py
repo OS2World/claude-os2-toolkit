@@ -57,9 +57,18 @@ class LXFixups:
         with open(path, "rb") as f:
             self.data = f.read()
         d = self.data
-        if len(d) < 0x40 or d[:2] not in (b"MZ", b"ZM"):
-            raise SystemExit("%s: not an MZ executable" % path)
-        self.h = struct.unpack_from("<I", d, 0x3C)[0]
+        # The DOS stub is OPTIONAL. A bare LX carries its magic at offset 0 with no MZ
+        # header at all -- netlabs ships several (the ncurses tinfo6.dll and the gcc
+        # runtime gcc1.dll among them). Demanding MZ first rejects those as a corrupt
+        # file rather than as the second valid layout they are.
+        # See os2ref/executable-formats.md section 1.1.
+        if d[:2] == b"LX":
+            self.h = 0
+        elif len(d) >= 0x40 and d[:2] in (b"MZ", b"ZM"):
+            self.h = struct.unpack_from("<I", d, 0x3C)[0]
+        else:
+            raise SystemExit(
+                "%s: not an LX image (no LX magic at 0, no MZ stub)" % path)
         if d[self.h:self.h + 2] != b"LX":
             raise SystemExit("%s: not an LX image (signature %r)"
                              % (path, d[self.h:self.h + 2]))

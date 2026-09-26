@@ -38,9 +38,17 @@ ENTRY_SIZES = {1: 3, 2: 5, 3: 5, 4: 7}
 
 def parse(path):
     data = open(path, "rb").read()
-    if data[:2] != b"MZ":
-        sys.exit(f"{path}: no MZ header")
-    lx_off = struct.unpack_from("<I", data, 0x3C)[0]
+    # The DOS stub is OPTIONAL. A bare LX carries its magic at offset 0 with no
+    # MZ header at all -- netlabs ships several (the ncurses tinfo6.dll and the
+    # gcc runtime gcc1.dll among them). Demanding MZ first rejects those as a
+    # corrupt file rather than as the second valid layout they are.
+    # See os2ref/executable-formats.md section 1.1.
+    if data[:2] == b"LX":
+        lx_off = 0
+    elif data[:2] == b"MZ":
+        lx_off = struct.unpack_from("<I", data, 0x3C)[0]
+    else:
+        sys.exit(f"{path}: not an LX image (no LX magic at 0, no MZ stub)")
     if data[lx_off:lx_off + 2] != b"LX":
         sys.exit(f"{path}: no LX header at 0x{lx_off:x} (got {data[lx_off:lx_off+2]!r})")
     # LX header: entry table offset (relative to LX header) at LX+0x5C
