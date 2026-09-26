@@ -107,7 +107,7 @@ font renders as intended [DOC-IBM].
 > | | `fsDefn & FM_DEFN_OUTLINE` set | not set (image font) |
 > |---|---|---|
 > | `fsFontUse` | `FATTR_FONTUSE_OUTLINE \| FATTR_FONTUSE_TRANSFORMABLE` | **0** - never ask an image font for outline |
-> | Size comes from | `GpiSetCharBox` (§2.5) | `FATTRS.lMaxBaselineExt` / `lAveCharWidth`, copied from the metrics |
+> | Size comes from | `GpiSetCharBox` (section 2.5) | `FATTRS.lMaxBaselineExt` / `lAveCharWidth`, copied from the metrics |
 > | Available sizes | any | only those it was drawn at - pick the nearest `sNominalPointSize`, **not** `lMaxBaselineExt`; see below |
 >
 > Applying a character box to an image font distorts the glyphs instead of scaling them, so the
@@ -279,14 +279,69 @@ Cyrillic, Japanese, `u`-umlaut, `e`-acute and the euro sign. Measured on Warp Se
   x and each continuation byte carries its end x. So text held as UTF-8 can be drawn and measured
   as-is, with none of the source-byte bookkeeping transcoding needs. In 1200 the same holds per
   two-byte code unit.
-- **There is no fallback between faces.** A character the chosen face lacks is simply not drawn -
-  no box, no substitute - which is what `Monotype Sans WT` did with Japanese.
+- **There is no fallback between faces** - but what a face does with a character it lacks
+  depends on the font kind, and the two look nothing alike. An **outline** face draws *nothing*:
+  no box, no substitute, which is what `Monotype Sans WT` did with Japanese and what 14 outline
+  faces did below with U+4E2D and U+E000 (0 pels, measured by reading the target back). An
+  **image** face draws a *substitute glyph* - the same one for every missing character. Neither
+  reports anything. [The "no box, no substitute" half was measured on outline faces only; the
+  image-face behaviour is from the later run described under "Image faces honour 1208 too".]
 - **`GpiSetCp(hps, 1200)` on the default font** (no logical font) also worked for Greek, Cyrillic
   and the euro sign; Japanese drew as boxes. The PS code page then applies to *every* later string,
   so an 8-bit label drawn afterwards came out as boxes too. Restore the previous code page.
 - `\PSFONTS` on the measured system held `tnrwt_j.ttf`, `mtsans_w.ttf`, `mtsansdj.ttf` and
   `tnrmt30.cmb` alongside the Type 1 faces; which file supplies which of the faces above was not
   checked.
+
+**The return code cannot tell you whether the code page took** [OBS-RE]. This is the trap that
+costs the afternoon, because the check looks like it works.
+
+`GpiCreateLogFont` returns `FONT_MATCH` (2) for a code page that **cannot exist**. Measured across
+28 faces on Warp Server for e-business 4.5, creating the same physical font (pinned by
+`FATTRS.lMatch`) four times at `usCodePage` 1208, 65001, 9999 and 850:
+
+| `usCodePage` | return code across the 28 faces | 2-byte UTF-8 sequence laid out as |
+|---|---|---|
+| 1208 | 27 `FONT_MATCH` (2), 1 `FONT_DEFAULT` (1) | **1 character on 28 of 28** - the page is live |
+| 65001 | 27 `FONT_MATCH` (2), 1 `FONT_DEFAULT` (1) | 2 characters on 28 of 28 - drawn as bytes |
+| 9999 (no such page) | 27 `FONT_MATCH` (2), 1 `FONT_DEFAULT` (1) | 2 characters on 28 of 28 - drawn as bytes |
+| 850 | 28 `FONT_MATCH` (2) | 2 characters on 28 of 28 - drawn as bytes, correctly |
+
+Read the first column again: the distribution is **identical** for the live page and for one that
+cannot exist, and on **no face** did the return for 1208 differ from the return for 9999. The
+return code carries no information about the code page at all - it is reporting the *face* match
+(section 2.1) and is simply blind to `usCodePage`; there is no "nearest code page" for it to mean.
+The second column separates them perfectly: 28 of 28 against 0 of 28.
+
+**Test by behaviour instead.** Lay out a multi-byte UTF-8 sequence and count the characters GPI
+made of it. In a live 1208 a 2-byte sequence is one character - the point past the pair is left
+untouched by an image font, or equals the previous point for an outline one - and in any
+single-byte page it is two, and the pen moves twice:
+
+```c
+POINTL st = { 0, 0 }, apt[3];
+apt[2].x = SENTINEL;                       /* a value GPI will not write */
+ok = GpiQueryCharStringPosAt(hps, &st, 0, 2, (PCH)"\xC3\xA9", NULL, apt)
+     && (apt[2].x == SENTINEL || apt[2].x == apt[1].x);   /* -> 1208 is live */
+```
+
+Pair it with a *drawing* check, or "consumed the bytes and drew nothing" reads as success: draw the
+sequence and count non-background pels with `GpiQueryPel`, against a control that must draw (`A`)
+and a codepoint no OS/2 text font has (U+4E2D, U+E000) to show what absence looks like.
+
+**65001 is not a synonym for 1208 here** [OBS-RE]. It is the number other platforms use for UTF-8,
+it is accepted without complaint, and it behaves exactly like an unknown page - bytes drawn one at
+a time, on every one of the 28 faces measured. Use 1208 (or 1200 for UCS-2).
+
+**Image faces honour 1208 too** [OBS-RE]. This was previously recorded here as unestablished. On
+the same system, 14 **image** (bitmap) faces - `System VIO`, `System Proportional`,
+`System Proportional Non-ISO`, `WarpSans` and `WarpSans Bold`, in several pel sizes - all treated a
+2- or 3-byte UTF-8 sequence as one character at 1208 and drew distinct glyphs for `e`-acute and the
+euro sign, while drawing them as separate bytes at 65001, 9999 and 850. Identified by
+`FONTMETRICS.fsDefn & FM_DEFN_OUTLINE` being clear, and each pinned by `lMatch` so the result is
+about the physical font measured rather than whatever a face name matched. So 1208 is a property of
+the GPI text path, not of outline rasterization. What image faces do *not* share is the outline
+faces' silent-nothing for a missing character - see the fallback bullet above.
 
 **How to verify.** Enumerate faces with `GpiQueryFonts(hps, QF_PUBLIC | QF_PRIVATE, NULL, ...)`,
 create a logical font per candidate face with `usCodePage = 1208`, draw a UTF-8 string of known
@@ -297,8 +352,11 @@ non-Latin characters with `GpiCharStringAt`, take a screenshot, and log what
 GPI code page. Try a 1208 logical font in a Unicode face before deciding the platform cannot draw it.
 
 **Not established** [unverified]: whether eComStation and ArcaOS install the same faces; whether
-Type 1 or bitmap faces draw anything in 1208; and what `UNICODE.SYS` (loaded from `CONFIG.SYS` on
-the measured system) contributes.
+**Type 1** faces draw anything in 1208; and what `UNICODE.SYS` (loaded from `CONFIG.SYS` on the
+measured system) contributes. [The bitmap half of this was answered - see "Image faces honour 1208
+too" above.] Also unestablished: which *repertoire* a given image face covers at 1208. The faces
+measured drew a euro sign, which code page 850 has no byte for, so coverage is not bounded by the
+font's own 8-bit page - but that was one codepoint on one system, not a survey.
 
 **DBCS code pages are per byte too** [DOC-IBM - *DBCS Design Guide and Information for OS/2*, os2books
 `dbcs/os2dbcs`, topic *Character vs. Byte*]: with a mixed code page, a string's count is in bytes,
