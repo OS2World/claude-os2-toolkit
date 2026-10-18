@@ -19,6 +19,7 @@ Two jobs, because they answer the two questions you have about a built module:
 
 Usage:
     lx_export.py LXIMAGE [--exports] [--imports] [--json]
+    lx_export.py LXIMAGE --def | --wlink
     lx_export.py LXIMAGE --dump [--obj N] [--outdir DIR] [--all]
 
 With neither --exports nor --imports, both are shown.
@@ -68,8 +69,8 @@ def parse_name_table(d, off, end=None):
     """Resident/non-resident name table -> [(name, ordinal)].
 
     Entries are: u8 len, name[len], u16 ordinal; a zero length terminates.
-    The FIRST entry is not an export - it is the module name (resident table)
-    or the module description (non-resident table) - so callers drop it.
+    The module name (resident table) or description (non-resident table) is
+    not an export: it is the entry with ordinal 0, which callers drop.
     """
     out = []
     if not off:
@@ -260,11 +261,14 @@ def describe(lx):
     res = parse_name_table(d, h + restab if restab else 0)
     nres = parse_name_table(d, nrestab, nrestab + cbnres if nrestab else None)
 
-    # First entry of each table is the module name / description, not an export.
-    module_name = res[0][0] if res else None
-    description = nres[0][0] if nres else None
+    # The module name / description is the first entry, with ordinal 0; a
+    # linker given no description writes none, so only ordinal 0 is dropped.
+    module_name = res[0][0] if res and res[0][1] == 0 else None
+    description = nres[0][0] if nres and nres[0][1] == 0 else None
+    res = [r for r in res if r[1] != 0]
+    nres = [r for r in nres if r[1] != 0]
     named = {}
-    for name, ordn in res[1:] + nres[1:]:
+    for name, ordn in res + nres:
         named.setdefault(ordn, name)
 
     entries = parse_entry_table(d, h + _u32(d, h + H_ENTTAB)
@@ -312,6 +316,104 @@ def print_exports(info):
               % (e["ordinal"], e["type"], e["name"] or "-", target))
 
 
+def export_records(lx, info):
+    """Per entry-table slot, what a module definition needs: ordinal, names
+    (first resident ones flagged), kind, object:offset, parameter words, and
+    for a forwarder its (module, target) with target an int ordinal or a name.
+    """
+    d, h = lx.data, lx.lx_off
+    restab = _u32(d, h + H_RESTAB)
+    nrestab = _u32(d, h + H_NRESTAB)
+    cbnres = _u32(d, h + H_CBNRESTAB)
+    res = [r for r in parse_name_table(d, h + restab if restab else 0) if r[1]]
+    nres = [r for r in parse_name_table(d, nrestab, nrestab + cbnres if nrestab else None)
+            if r[1]]
+    names, resident = {}, set()
+    for name, ordn in res:
+        names.setdefault(ordn, []).append(name)
+        resident.add((ordn, name))
+    for name, ordn in nres:
+        names.setdefault(ordn, []).append(name)
+    impproc = _u32(d, h + H_IMPPROC)
+    mods = info["import_modules"]
+    for e in info["exports"]:
+        ordn = e["ordinal"]
+        nl = names.get(ordn, [])
+        r = {"ordinal": ordn, "names": nl, "kind": e["type"],
+             "resident": bool(nl) and (ordn, nl[0]) in resident,
+             "pwords": 0, "fwd": None, "note": [e["type"]]}
+        if e["type"] == "forwarder":
+            mod = mods[e["fwd_modord"] - 1] if 0 < e["fwd_modord"] <= len(mods) \
+                else "module%d" % e["fwd_modord"]
+            tgt = e["fwd_value"] if e["fwd_by_ordinal"] else \
+                import_proc_name(d, h + impproc if impproc else 0, e["fwd_value"])
+            r["fwd"] = (mod, tgt)
+        else:
+            r["pwords"] = e["parm_words"]
+            r["note"].append("obj %d:%08x" % (e["obj"], e.get("offset", 0)))
+            if not e.get("exported", True):
+                r["note"].append("not exported")
+        if len(nl) > 1:
+            r["note"].append("also named " + ", ".join(nl[1:]))
+        yield r
+
+
+def print_def(lx, info):
+    """The export surface as an OS/2 module definition file (.def).
+
+    One EXPORTS line per entry-table slot, in ordinal order, with the slot's
+    first name (resident names marked RESIDENTNAME), NONAME and a placeholder
+    name for unnamed slots, the parameter word count where it is nonzero, and
+    forwarders as `= MODULE.target`. What a .def cannot say (the entry kind and
+    object, a second name) goes in a trailing comment.
+    """
+    print("LIBRARY %s" % (info["module"] or "?"))
+    if info["description"]:
+        print("DESCRIPTION '%s'" % info["description"].replace("'", "''"))
+    print("EXPORTS")
+    for r in export_records(lx, info):
+        name = r["names"][0] if r["names"] else "ORD_%d" % r["ordinal"]
+        line = "    %s" % name
+        if r["fwd"]:
+            line += " = %s.%s" % r["fwd"]
+        line += " @%d" % r["ordinal"]
+        if not r["names"]:
+            line += " NONAME"
+        elif r["resident"]:
+            line += " RESIDENTNAME"
+        if r["pwords"]:
+            line += " %d" % r["pwords"]
+        print("%-56s ; %s" % (line, "; ".join(r["note"])))
+
+
+def print_wlink(lx, info):
+    """The export surface as OpenWatcom wlink directives (OS/2 LX).
+
+    A named slot is `export NAME.ord [RESIDENT] [iopl_bytes]`, bound to the
+    symbol NAME; an unnamed one is `anonymousexport ORD_n.n`, bound to ORD_n,
+    which puts no name in either name table. iopl_bytes is twice the slot's
+    parameter word count. A forwarder imports its target under FWD_n and
+    exports that.
+    """
+    print("option modname=%s" % (info["module"] or "?"))
+    if info["description"]:
+        print("option description '%s'" % info["description"].replace("'", "''"))
+    for r in export_records(lx, info):
+        ordn = r["ordinal"]
+        name = r["names"][0] if r["names"] else "ORD_%d" % ordn
+        sym = ""
+        if r["fwd"]:
+            print("import FWD_%d %s.%s" % (ordn, r["fwd"][0], r["fwd"][1]))
+            sym = "=FWD_%d" % ordn
+        line = "%s %s.%d%s" % ("export" if r["names"] else "anonymousexport",
+                               name, ordn, sym)
+        if r["resident"]:
+            line += " RESIDENT"
+        if r["pwords"]:
+            line += " %d" % (2 * r["pwords"])
+        print("%-56s # %s" % (line, "; ".join(r["note"])))
+
+
 def print_imports(info):
     mods = info["import_modules"]
     refs = info["import_refs"]
@@ -338,6 +440,10 @@ def main():
     ap.add_argument("--exports", action="store_true", help="show exports only")
     ap.add_argument("--imports", action="store_true", help="show imports only")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
+    ap.add_argument("--def", dest="deffile", action="store_true",
+                    help="print the exports as an OS/2 module definition file")
+    ap.add_argument("--wlink", action="store_true",
+                    help="print the exports as OpenWatcom wlink directives")
     ap.add_argument("--dump", action="store_true",
                     help="write object images + manifest.json for Ghidra")
     ap.add_argument("--obj", type=int, help="--dump: only this object number")
@@ -353,6 +459,12 @@ def main():
 
     if not args.dump:
         info = describe(lx)
+        if args.deffile:
+            print_def(lx, info)
+            return 0
+        if args.wlink:
+            print_wlink(lx, info)
+            return 0
         if args.json:
             out = dict(info)
             out["import_refs"] = {k: sorted(v) for k, v in info["import_refs"].items()}
