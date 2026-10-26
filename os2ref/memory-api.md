@@ -754,10 +754,38 @@ APIRET APIENTRY DosSizeSeg(SEL sel, PULONG pcbSize);
 - `DosFreeSeg` of an interior selector returns 5 and leaves the block intact; `DosFreeSeg` of the
   base frees it, and a second `DosFreeSeg` returns 5.
 
-## Aliasing
+## The ring-2 stack - `DosR2StackRealloc` (16-bit only)
 
 ```c
-APIRET APIENTRY DosAliasMem(PVOID pb, ULONG cb, PPVOID ppbAlias, ULONG fl);   /* bsedos.h:1840 */
+APIRET APIENTRY DosR2StackRealloc(USHORT cbStack);   /* DDK base/h/bsedos16.h:1866; DOSCALLS ordinal 160, bseord.h:371 */
+```
+
+Grows the calling thread's ring-2 stack, the stack 16-bit I/O-privilege (IOPL) code runs on. There
+is no 32-bit form; 32-bit code reaches it through a thunk (PM's own `WinR2StackRealloc` does). The
+1.x reference says the new size cannot be less than the current one, that the call cannot be made
+from privilege level 2, and lists 0, 8, 196, 197, 207 and 216 [DOC - OS/2 1.x Control Program
+Reference, "DosR2StackRealloc"]; `cbStack` 0 means 64 KB, as for the other 16-bit size arguments.
+
+**The documented "cannot shrink" rule holds only for some processes** [OBS - measured on Warp
+Server for e-business 4.50, kernel revision 14.089, SMP; three 16-bit probes running one fixed
+sequence on the main thread]:
+
+| Call, in order | Plain program | Program that has loaded PM (imports `PMWIN`, or `DosLoadModule("PMMERGE")` first) |
+|---|---|---|
+| 0xF000, then 0xF000 again | 0, 0 | 0, 0 |
+| 0x1000 (smaller) | **0** | 216 `ERROR_CANNOT_SHRINK` |
+| 0xF800 (larger) | 0 | 0 |
+| 0 (64 KB) | 0 | 0 |
+| then 0xF000 | **0** | 216 |
+| then 0 | 0 | 0 |
+
+The kernel has two paths [OBS-RE - the kernel's ring-2-stack worker, read with its symbols]: one
+that only records the requested size and answers 0, and one for a thread that has a real private
+ring-2 stack, which refuses anything below the last granted size, and any non-zero request once
+the stack is 64 KB. Loading PM put the thread on the second path; a plain program stayed on the
+first. Running the probes in reverse order changed nothing, so the path is chosen per process,
+not by what ran before. What exactly selects the path was not read. Codes 196, 197, 207 and 8
+were not provoked.PVOID pb, ULONG cb, PPVOID ppbAlias, ULONG fl);   /* bsedos.h:1840 */
 ```
 [DOC-IBM `bsedos.h`]
 
