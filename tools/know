@@ -62,6 +62,7 @@ Verbs (run with no arguments for the summary):
     verify [ID|--all]          re-run stored verify_cmd's; exit = DISAGREE count
     export DIR                 readable prose + a LOSSLESS know.jsonl
     import PATH                rebuild facts/searches from that jsonl
+    import --merge PATH        add another store's export, under new ids
     stats
 """
 import argparse
@@ -1671,12 +1672,19 @@ def cmd_import(a):
     """Rebuild fact/search rows from know.jsonl. Chunks are NOT imported -- they
     are re-derivable from the library with `know ingest`."""
     import json
+    if a.merge and a.force:
+        die("--merge and --force are opposites: one adds the file's rows to the "
+            "store, the other replaces the store with them")
+    if a.dry_run and not a.merge:
+        die("--dry-run is for --merge")
     c = connect(create=True)
     c.executescript(DDL)
     migrate(c)
+    if a.merge:
+        return _import_merge(c, a, json)
     if c.execute("SELECT COUNT(*) n FROM fact").fetchone()["n"] and not a.force:
         die("store already holds facts; refusing to import over them "
-            "(--force to REPLACE them)")
+            "(--force to REPLACE them, --merge to add to them)")
     # --force is a RESTORE, not a merge. An earlier version only overwrote rows
     # the export happened to carry, so a row present in the store and absent from
     # the file survived and the result was a union -- which is the one thing a
@@ -1733,6 +1741,138 @@ def cmd_import(a):
         print(f"--force: cleared {wiped[0]} fact and {wiped[1]} search row(s)")
     print(f"imported {n} rows from {a.path}  (fact_fts integrity verified)")
     print("chunks are NOT included -- re-run `know ingest` for the material")
+
+
+def _import_merge(c, a, json):
+    """--merge: ADD another store's export to this one, under new ids.
+
+    The two stores number their rows independently, so the file's ids collide
+    with ours and cannot be kept. Every incoming row gets a fresh id, and the
+    three columns that hold ids -- fact.superseded_by, search.superseded_by and
+    search.fact_id -- are rewritten through the old->new map, so a supersede
+    chain or a search's link to its fact survives the move intact.
+
+    A row that is already here, word for word (a fact's claim AND citation; a
+    search's question, target, verdict and result), is not added twice: its id
+    maps onto the existing row, so links pointing at it still land.
+
+    What CANNOT be remapped is an id written inside free text -- a claim saying
+    "corrects #309" means the SOURCE store's #309. So each merged row records
+    where it came from: a fact's derived_by and a search's result gain
+    " [merged from LABEL #N]" / " [merged from LABEL neg#N]", and a reader who
+    meets "#309" in a merged claim looks for that tag.
+
+    One transaction, integrity-checked before the commit, as the restore is.
+    """
+    label = a.label or os.path.basename(os.path.dirname(os.path.abspath(a.path))) \
+        or os.path.basename(a.path)
+    have = {t: {r[1] for r in c.execute(f"PRAGMA table_info({t})")}
+            for t in ("fact", "search")}
+    rows = {"fact": [], "search": []}
+    for ln, line in enumerate(open(a.path, encoding="utf-8"), 1):
+        line = line.strip()
+        if not line:
+            continue
+        row = json.loads(line)
+        t = row.pop("_t", None)
+        if t not in rows:
+            die(f"{a.path}:{ln}: unknown row type {t!r}")
+        extra = set(row) - have[t]
+        if extra:
+            # A column this store does not have would be dropped silently by a
+            # partial INSERT. Refuse instead: the file comes from a newer or a
+            # different schema, and its rows would arrive missing data.
+            die(f"{a.path}:{ln}: {t} row has column(s) this store lacks: "
+                f"{', '.join(sorted(extra))}")
+        rows[t].append(row)
+
+    fmap, smap = {}, {}
+    dup_f = dup_s = 0
+    added_f, added_s = [], []
+    for r in rows["fact"]:
+        hit = c.execute("SELECT id FROM fact WHERE claim IS ? AND citation IS ?",
+                        (r.get("claim"), r.get("citation"))).fetchone()
+        if hit:
+            fmap[r["id"]] = hit["id"]
+            dup_f += 1
+            continue
+        old = r.pop("id")
+        r["superseded_by"], sup = None, r.get("superseded_by")
+        r["derived_by"] = f"{r.get('derived_by') or ''} [merged from {label} #{old}]".strip()
+        added_f.append((old, sup, r))
+    for r in rows["search"]:
+        # `result` is where a merged search records its origin, so a row merged
+        # here before carries the tag: match the tagged spelling as well, or a
+        # second merge of the same file would add every search again.
+        tagged = f"{r.get('result') or ''} [merged from {label} neg#{r['id']}]".strip()
+        hit = c.execute("SELECT id FROM search WHERE question IS ? AND target IS ? "
+                        "AND verdict IS ? AND (result IS ? OR result IS ?)",
+                        (r.get("question"), r.get("target"), r.get("verdict"),
+                         r.get("result"), tagged)).fetchone()
+        if hit:
+            smap[r["id"]] = hit["id"]
+            dup_s += 1
+            continue
+        old = r.pop("id")
+        r["superseded_by"], sup = None, r.get("superseded_by")
+        r["result"] = tagged
+        added_s.append((old, sup, r))
+
+    def insert(t, r):
+        cols = list(r)
+        cur = c.execute(f"INSERT INTO {t}({','.join(cols)}) "
+                        f"VALUES ({','.join('?' * len(cols))})", [r[k] for k in cols])
+        return cur.lastrowid
+
+    # Pass 1: every row in, links empty. Pass 2: the links, through the maps.
+    # Two passes because a row may be superseded by one later in the file.
+    for old, _, r in added_f:
+        fmap[old] = insert("fact", r)
+    lost_links = 0
+    for old, _, r in added_s:
+        fid = r.get("fact_id")
+        if fid is not None and fid not in fmap:
+            lost_links += 1        # names a fact the file does not contain
+        r["fact_id"] = fmap.get(fid) if fid is not None else None
+        smap[old] = insert("search", r)
+    dangling = 0
+    for t, added, m in (("fact", added_f, fmap), ("search", added_s, smap)):
+        for old, sup, _ in added:
+            if sup is None:
+                continue
+            if sup not in m:
+                dangling += 1      # the file names a row it does not contain
+                continue
+            c.execute(f"UPDATE {t} SET superseded_by=? WHERE id=?", (m[sup], m[old]))
+
+    def summary():
+        print(f"merge from {a.path}  (label: {label})")
+        print(f"  facts     {len(added_f):>6} added   {dup_f:>5} already here")
+        print(f"  searches  {len(added_s):>6} added   {dup_s:>5} already here")
+        if dangling:
+            print(f"  WARNING: {dangling} superseded_by link(s) name a row the file "
+                  f"does not contain; left empty")
+        if lost_links:
+            print(f"  WARNING: {lost_links} search row(s) link a fact the file "
+                  f"does not contain; link left empty")
+        print("  verify_cmd's were written for the SOURCE project's working "
+              "directory; run\n  `know verify --cwd <that directory>` to "
+              "re-check merged rows")
+
+    if a.dry_run:
+        c.rollback()
+        summary()
+        print("dry run: nothing written")
+        return
+    try:
+        c.execute("INSERT INTO fact_fts(fact_fts, rank) VALUES('integrity-check', 1)")
+    except sqlite3.DatabaseError as e:
+        c.rollback()
+        die(f"merge would have left the fact_fts index INCONSISTENT with its "
+            f"content table: {e}\n       ROLLED BACK -- the store is unchanged.")
+    c.commit()
+    summary()
+    print("  (fact_fts integrity verified)")
 
 
 def cmd_stats(a):
@@ -1928,6 +2068,14 @@ def main():
     p.add_argument("path")
     p.add_argument("--force", action="store_true",
                    help="REPLACE the store's facts and searches with the file's")
+    p.add_argument("--merge", action="store_true",
+                   help="ADD the file's rows to the store under new ids "
+                        "(another project's export)")
+    p.add_argument("--label",
+                   help="with --merge: the source name recorded on each merged "
+                        "row (default: the export's directory name)")
+    p.add_argument("-n", "--dry-run", action="store_true",
+                   help="with --merge: report what would be added, write nothing")
     p.set_defaults(fn=cmd_import)
 
     sub.add_parser("stats", help="what the store holds").set_defaults(fn=cmd_stats)

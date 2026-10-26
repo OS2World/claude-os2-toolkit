@@ -130,6 +130,7 @@ raise a tag on its own.
 | `stale` / `refresh` | which ingested files changed; re-index just those |
 | `stats` | what the store holds, and where |
 | `export DIR` / `import FILE` | readable prose plus a lossless `know.jsonl`; `import --force` restores rather than merges |
+| `import --merge FILE [--label NAME] [-n]` | add ANOTHER store's export (e.g. a second project's) under new ids: supersede chains and fact links are remapped, rows already present are skipped, and each merged row is tagged `[merged from NAME #N]` so ids written inside its text can be traced. `-n` reports without writing |
 
 The store is machine-local and deliberately unversioned - an OS/2 fact cannot
 legally differ between branches, and versioning it would manufacture exactly
