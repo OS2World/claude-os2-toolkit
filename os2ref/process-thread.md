@@ -413,7 +413,17 @@ APIRET APIENTRY DosExitList(ULONG ordercode, PFNEXITLIST pfn);
 ```
 
 Registers (or removes) a routine to run when the process terminates. Exit-list routines execute,
-in a defined order, on the process's last surviving thread during `EXIT_PROCESS` shutdown. While
+in a defined order, on **thread 1**, after every other thread of the process has ended - however the
+process began to end: `DosExit(EXIT_PROCESS)` from any thread, any `DosExit` from thread 1
+(including thread 1's function returning), or a kill that nothing intercepts [OBS-RE - the Warp 4.5
+SMP debug kernel's `_TKExit`, `_TKDieSoonPTDA` and `_TKTermThread`]. *(CORRECTED, Rule 1.7: this
+said "on the process's last surviving thread during `EXIT_PROCESS` shutdown". The two readings
+differ whenever the exiting thread is not thread 1.)* Measured from a 16-bit program on Warp 4.50
+(kernel revision 14.089, SMP) [OBS-RE - measured]: in every case above the routine ran with
+`tidCurrent` 1; other threads, sleeping or spinning, made no further progress; a thread blocked in
+`DosCWait(DCWW_WAIT)` never returned, and the process ended at once rather than waiting for the
+child. The termination code passed to the routine was 0 (`TC_EXIT`) for the `DosExit` cases and 3
+(`TC_KILLPROCESS`) for the kill. Routines with equal order values ran last-added first. While
 an exit routine runs, `PS_EXITLIST` is set in `pib_flstatus`. Each routine must finish by
 calling `DosExitList` with `EXLST_EXIT`, which passes control to the next registered routine.
 
@@ -506,7 +516,7 @@ Values these calls return on failure (0 = `NO_ERROR` on success):
 | 87 | `ERROR_INVALID_PARAMETER` | `DosCreateThread2`: bad parameter (e.g. stack address at/above 512MB) [DOC - EDM2 "DosCreateThread2"] |
 | 115 | `ERROR_PROTECTION_VIOLATION` | `DosCreateThread2`: memory-protection violation [DOC - EDM2 "DosCreateThread2"] |
 | 305 | `ERROR_NOT_DESCENDANT` | `DosKillProcess` (action `DKP_PROCESSTREE`): target is not the current process or one of its descendants [DOC - EDM2 "DosKillProcess (OS/2 1.x)"] |
-| 322 | `ERROR_TS_WAKEUP` | `DosSleep`: listed as a possible return (EDM2 does not further define it) [DOC - EDM2 "DosSleep (FAPI)"] |
+| 322 | `ERROR_TS_WAKEUP` | `DosSleep`: the sleep was ended by something other than the interval running out - a forced action (an exit or a signal) delivered to the thread. 0 and 322 are the only returns [DOC-IBM `cp1.txt`, "DosSleep Return Value - ulrc"]. In the kernel the sleep is interruptible, `DosSleep(0xFFFFFFFF)` becomes a sleep of `0xFFFFFFFE` ms rather than an infinite one, and a suspend does not interrupt it [OBS-RE - the SMP kernel's `_VRSleep` / `_TKSleep`]. Measured on Warp Server for e-business 4.50: a thread sleeping 5000 ms whose process's other thread called `DosExit(EXIT_PROCESS)` 200 ms in (with a handler continuing `XCPT_ASYNC_PROCESS_TERMINATE`) got 322 after about 210-225 ms [OBS-RE - measured]. *(Previously "listed as a possible return (EDM2 does not further define it)".)* |
 | 485 | `ERROR_CRITSEC_UNDERFLOW` | `DosExitCritSec`: more `DosExitCritSec` calls than matching `DosEnterCritSec` calls [DOC - EDM2 "DosExitCritSec (OS/2 1.x)"] |
 
 ---

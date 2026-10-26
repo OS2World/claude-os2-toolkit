@@ -16,7 +16,7 @@ reverse-engineering the real binaries, **[DOC]** other published reference.
 | 6 | `DEVICE=` PDD loading | the `\DEV\` device namespace + per-device IOCtl categories |
 | 7 | `IFS=` filesystem install | the FS-attach / FS-control surface + the FSHelper contract an IFS runs against |
 | 8 | CONFIG.SYS processing | the process environment block + NLS (codepage / country) queries |
-| 9 | Session manager init | the session / screen-group model and its control APIs |
+| 9 | Session manager (not a boot stage - see Stage 9) | the session / screen-group model and its control APIs |
 | 10 | `PROTSHELL=` launch | the protected-mode shell process |
 | 11 | Presentation Manager | the Win* / Gpi* API, the message queue, the GPI->GRE->driver draw path |
 | 12 | `RUNWORKPLACE=` | the shell reads an env var to launch the desktop program (default: the Workplace Shell) |
@@ -134,7 +134,9 @@ The FSD entry-point set (`FS_*`), the FSHelper surface, and the VPB volume model
 The kernel reads CONFIG.SYS in **multiple passes by category**, not line-by-line; `PROTSHELL=` runs
 last. (Period references give a scan order PSD -> BASEDEV -> DEVICE/IFS -> RUN/CALL -> general, but the
 placement of the `SET`/`LIBPATH` and NLS groups varies across sources - see
-`config-and-environment.md`. [DOC]) It publishes:
+`config-and-environment.md`. [DOC]) For the ring-3 phase the kernel's own code settles part of this:
+the environment and NLS are set up **before** `DEVICE=`/`IFS=` drivers are installed, so in execution
+this stage precedes Stages 6-7. See "Who runs Stages 6-10" below. It publishes:
 - **The environment** - a flat, double-null-terminated block (`"NAME=value\0...\0\0"`, <= 64 KB) at
   `PIB.pib_pchenv`, walked by `DosScanEnv`. `LIBPATH=` / `BEGINLIBPATH=` / `ENDLIBPATH=` set their
   value with **no `SET` prefix**; every other variable requires `SET NAME=value`. Directive and
@@ -147,7 +149,40 @@ placement of the `SET`/`LIBPATH` and NLS groups varies across sources - see
 
 The env-block format and NLS structures -> `config-and-environment.md`.
 
-## Stage 9 - Session manager initialization
+### Who runs Stages 6-10: the SYSINIT process
+
+Installable drivers are initialised inside a **process**: IBM says a PDD's strategy routine at INIT
+time runs under the thread of the System Initialization Process, at ring 3 with I/O privilege
+[DOC-IBM *Physical Device Driver Reference*, "Physical Device Driver Initialization"]. That process
+is **pid 1**: IBM's worked examples list a PTDA `0001 *sysinit` alongside a running `pmshell.exe`,
+so it is still there once the shell is up [DOC-IBM *OS/2 Debugging Handbook* Vol. I, SG24-4640,
+"Worked Examples", the `.m` listing].
+
+Its main routine, `syiProcess`, performs the CONFIG.SYS work itself, in this order [OBS-RE - Warp
+4.5 UNI kernel 14.104a with its `.sym`; disassembled, from the directory holding both, with
+`lx_disasm.py os2krnl --sym os2krnl.sym --sym-name h_syiProcess --bits 16 --count 140`]:
+
+| Call | Does |
+|---|---|
+| `syiInitEnvironment` | the environment (Stage 8) |
+| `syicpInit` | `COUNTRY=` / `CODEPAGE=` / `DEVINFO=` (Stage 8, NLS) |
+| `syicpActivate` | activates the code pages (Stage 8, NLS) |
+| `syiInstallDeviceDrivers` | `DEVICE=` and `IFS=` (Stages 6-7) |
+| `syiStartShell` | `PROTSHELL=` (Stage 10) |
+
+`RUN=`/`CALL=` daemons start between the driver installation and the shell
+(`syiStartDaemonProcesses`), and a second daemon pass runs after it (`syi2StartDaemonProcesses`)
+[OBS-RE - same routine and command].
+
+## Stage 9 - Session manager
+
+**CORRECTED (Rule 1.7): not a boot stage, and not before Stage 10.** This heading used to read
+"Session manager initialization", placed before `PROTSHELL=`. No step of `syiProcess` sets up a
+session manager. The shell does that **after** `PROTSHELL=` starts it, by registering through
+`DosSMInitialize` (16-bit `DOSCALLS` ordinal 707 [DOC - osFree ordinal list]; `PMMERGE.DLL`
+imports `DOSCALLS.#707` [OBS-RE - `lx_resolve_imports.py --all-objects --kind import
+--summary PMMERGE.DLL`, run in `\OS2\DLL` of an installed system]). The contract below is
+unchanged; only its place in the sequence was wrong.
 
 [DOC-IBM] The protected-mode session manager governs **sessions** (screen groups). Contract:
 - `DosStartSession` (with the `STARTDATA` structure: program, session type, foreground / background,
@@ -168,8 +203,10 @@ The session model and control APIs -> `session-manager.md`.
 ## Stage 10 - `PROTSHELL=` launches the shell
 
 [DOC-IBM] The last CONFIG.SYS category, `PROTSHELL=`, names the protected-mode shell - normally
-`PMSHELL.EXE`, which brings up the Presentation Manager (Stage 11). The process is launched like any
-other; `PIB.pib_ulpid` is its process id.
+`PMSHELL.EXE`, which brings up the Presentation Manager (Stage 11). `PIB.pib_ulpid` is its process
+id. The shell is a **child of the SYSINIT process** (parent pid 1), not pid 1 itself. On a measured
+SMP Warp 4.50 boot its pid was 0x13, after the file-system check program and the `RUN=` daemons
+[OBS-RE - kernel-debugger reads of the local InfoSeg].
 
 ## Stage 11 - Presentation Manager
 
@@ -236,4 +273,7 @@ documented, if needed, in their own references.
   source (Toolkit 4.5 `devhlp.inc` lists 117 entries up to number 131; a subset DDK `DEVHLP.INC` lists
   53), so the approximate "~103" is retained and its precise enumeration is left to `kernel-services.md`.
   The Stage 8 CONFIG.SYS category *scan order* remains [DOC] - period references disagree on the exact
-  order, so it stays deliberately hedged (see `config-and-environment.md`).
+  order, so it stays deliberately hedged (see `config-and-environment.md`). For the ring-3 phase it
+  is no longer hedged: environment and NLS precede `DEVICE=`/`IFS=` (Stage 8, from `syiProcess`'s
+  call order). That correction, the Stage 9 correction and the SYSINIT section were added after
+  this ratification pass and are not covered by it.

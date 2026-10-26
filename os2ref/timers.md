@@ -64,8 +64,10 @@ thread blocks on that semaphore and wakes each time the timer posts it.
 **Resolution.** The `msec` interval is a request; actual delivery is quantized to the system
 **clock tick**, so a timer cannot resolve finer than one tick and short intervals are rounded
 up to a tick boundary. The tick interval is queryable at run time - `SIS_ClkIntrvl` in the
-local InfoSeg (units of 0.0001 s) and `QSV_TIMER_INTERVAL` via `DosQuerySysInfo` (tenths of a
-millisecond); see `infoseg.md`. The default tick is on the order of tens of milliseconds
+**global** InfoSeg (units of 0.0001 s) and `QSV_TIMER_INTERVAL` via `DosQuerySysInfo` (tenths of a
+millisecond); see `infoseg.md`. *(CORRECTED, Rule 1.7: this said **local** InfoSeg. `SIS_*` fields
+belong to `struct InfoSegGDT`, the system-wide GDT segment [DOC-IBM DDK `base/h/infoseg.h:36,47`];
+the per-process local InfoSeg has no timer field, and `infoseg.md` already had it right.)* The default tick is on the order of tens of milliseconds
 (nominally ~32 ms) [DOC], which is far coarser than the high-resolution timer below - code
 needing sub-tick precision uses `DosTmrQueryTime`, not the interval timers.
 
@@ -157,7 +159,10 @@ can read directly to avoid a call.
 **Field ranges and validation on set** [DOC - EDM2 "DosSetDateTime (OS/2 1.x)"]. `DosSetDateTime`
 validates the supplied fields and rejects an out-of-range or impossible value with
 `ERROR_TS_DATETIME` (327). The accepted ranges are `hours` 0-23, `minutes` 0-59, `seconds` 0-59,
-`hundredths` 0-99, `day` 1-31, `month` 1-12, `year` 1980-2079, and `timezone` -720...720. The day
+`hundredths` 0-99, `day` 1-31, `month` 1-12, `year` 1980-2079, and `timezone` -720...720 per the 1.x
+text. *(Qualified: on Warp Server for e-business 4.50, kernel revision 14.089, the accepted range is
+**-780...780**; 781 and -781 are refused with 327 [OBS-RE - measured with 32-bit and 16-bit
+probes]. Code that refuses offsets beyond 720 rejects real zones such as UTC+13.)* The day
 is additionally checked against the month and year - leap years included - so an impossible date
 (e.g. 30 February) is rejected. `weekday` is **ignored on set**: the kernel recomputes it from the
 date rather than trusting the caller's value.

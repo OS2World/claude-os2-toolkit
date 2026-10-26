@@ -239,7 +239,7 @@ info level; the EA-relevant levels are:
 | `FIL_STANDARD` | `1` | `FILESTATUS3` (query) / `FILESTATUS3` (set) | Level 1 file information - no EAs. |
 | `FIL_QUERYEASIZE` | `2` | `FILESTATUS4` on query; `EAOP2` on set | Query: report the **total EA size**. Set: write a list of EAs. |
 | `FIL_QUERYEASFROMLIST` | `3` | `EAOP2` | Query only: return the **values** of a named list of EAs. |
-| `FIL_QUERYFULLNAME` | `5` | ASCIIZ path (path APIs only) | Fully-qualified name. (Level 4 is simply *absent* from the Toolkit headers - not defined; "reserved" would be an inference.) |
+| `FIL_QUERYFULLNAME` | `5` | ASCIIZ path (path APIs only) | Fully-qualified name. (Level 4 is simply *absent* from the Toolkit headers - not defined; "reserved" would be an inference. The DDK's 16-bit `bsedos16.h` does define `FIL_QUERYALLEAS` 4, for the find calls - see section 6.) |
 
 Large-file (`>2 GB`) analogues are `FIL_STANDARDL` (11), `FIL_QUERYEASIZEL` (12), and
 `FIL_QUERYEASFROMLISTL` (13), using `FILESTATUS3L`/`FILESTATUS4L`. Provenance: **[DOC-IBM]**
@@ -375,9 +375,20 @@ name needs no such protection, since no sharing is possible). `DosProtectEnumAtt
 ## 6. Getting EAs through a directory search - `DosFindFirst` [DOC-IBM]
 
 `DosFindFirst`/`DosFindNext` can return EA information alongside each matched directory entry, via
-the `ulInfoLevel` argument (`bsedos.h:1536-1551`). The three EA-relevant levels reuse the
+the `ulInfoLevel` argument (`bsedos.h:1536-1551`). The three levels IBM's books document reuse the
 `FIL_STANDARD`/`FIL_QUERYEASIZE`/`FIL_QUERYEASFROMLIST` values from Section 4, but the buffer shape
 differs by level. Every level always includes level-1 information for each entry.
+
+> **CORRECTED (Rule 1.7):** this said *"The three EA-relevant levels"*. Those are the three the
+> books describe, not the whole space. IBM's headers define more find levels, and two families name
+> them differently: the 32-bit `bsedos.h` has `FIL_STANDARDL` 11, `FIL_QUERYEASIZEL` 12 and
+> `FIL_QUERYEASFROMLISTL` 13 [DOC-IBM `bsedos.h:745-747`], and the 16-bit header has
+> `FIL_QUERYALLEAS` 4, "return all EA's" [DOC-IBM DDK `base/h/bsedos16.h:509`]. Neither family
+> defines the other's values. Level 13 is level 3's large-file twin: the same `EAOP2` frame and
+> `FEA2LIST`, with the 64-bit `cbFile`/`cbFileAlloc` widening the header so the record starts with
+> `FILEFINDBUF4L` where level 3's starts with `FILEFINDBUF4` [OBS-RE - DOSCALL1 handles 3/4 and
+> 13/14 in shared code paths; measured on Warp Server for e-business 4.50, where an 8-character
+> name landed at `0x24 + cbList`].
 
 | Level | Value | Result buffer format |
 |---|---|---|

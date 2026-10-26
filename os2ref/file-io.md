@@ -188,10 +188,20 @@ carries extended attributes to attach on create (may be `NULL`).
 beyond end-of-file is legal and, on a later write, extends the file. `DosSetFilePtrL` takes a
 `LONGLONG ib` and `PLONGLONG ibActual` for 64-bit files. [DOC-IBM `bsedos.h:1630,1636`]
 
-### 4.2 `DosSetFileSize` [DOC-IBM `bsedos.h:1612`]
+### 4.2 `DosSetFileSize` [DOC-IBM `bsedos.h:1612` for the prototype; `cp1.txt` "DosSetFileSize" for the contract]
 
 Sets the file's length to `cbSize` - truncating (discarding data past the new end) or extending
-(new bytes read back as zero). `DosSetFileSizeL` is the 64-bit form. Requires write access.
+it. When the file grows, **the contents of the new bytes are undefined** [DOC-IBM `cp1.txt`,
+"DosSetFileSize - Remarks"; `DosOpen`'s remarks say the same of an initial `cbFile`].
+`DosSetFileSizeL` is the 64-bit form. Requires write access.
+
+> **CORRECTED (Rule 1.7):** this paragraph used to say *"extending (new bytes read back as
+> zero)"*, citing `bsedos.h:1612`. A prototype cannot state a fill rule, and IBM's book says the
+> opposite. Measured on Warp Server for e-business 4.50 (kernel revision 14.089, HPFS): a 16-byte
+> file grown to 64 bytes read back 48 new bytes, none of them zero, through both the 16-bit and the
+> 32-bit entry points [OBS-RE - measured]. **The tell:** code that grows a file and then reads the
+> tail expecting zeros - write the zeros yourself. (An implementation that does zero-fill is still
+> conformant; "undefined" admits zero.)
 
 ---
 
@@ -215,13 +225,54 @@ same handle fails unless an intervening `DosFindFirst` has re-opened it [DOC - E
 selecting which directory entries match. `ulInfoLevel` selects the output record layout, the same
 `FIL_*` levels used by `DosQueryFileInfo` (section 7).
 
-### 5.1 Find-buffer records [DOC-IBM `bsedos.h:1003-1108`]
+**The may-have bits do not all filter.** IBM's parameter text says each may-have bit (read-only,
+hidden, system, directory, archived) includes files with that attribute when set and *excludes*
+them when clear [DOC-IBM `cp1.txt`, "DosFindFirst Parameter - flAttribute"]. Observed behaviour
+contradicts that for **read-only and archived**: `CMD.EXE`'s plain `dir` passes `flAttribute =
+0x0016` (hidden, system, directory - no read-only, no archived), yet it lists read-only files and
+archived files (nearly every file is archived) [OBS-RE - measured on Warp 4.50 by logging the
+mask CMD's find call passes]. So read-only and archived files come back whatever the mask says;
+only hidden, system and directory act as may-have inclusion bits. The must-have byte (bits 8-13)
+was not measured separately; ordinary use has not contradicted IBM's description. **The tell:** a search that "should"
+exclude read-only files returns them - filter on `attrFile` yourself. (`dir` hiding hidden and
+system files is CMD's own display rule; the find call does return them under that mask.)
 
-The record written into `pfindbuf` depends on `ulInfoLevel`. All levels lead with the three
-date/time pairs and the two sizes; they differ in attribute width, whether an EA-list size is
-present, and (levels 3/4) a next-entry offset that chains packed variable-length records.
+### 5.1 Find-buffer records [DOC-IBM `bsedos.h:1003-1108`; DDK `base/h/bsedos16.h:646-682`; `cp1.txt` "DosFindFirst Parameter - pfindbuf"]
 
-`FILEFINDBUF` (`FIL_STANDARD`, level 1):
+The record written into `pfindbuf` depends on **two** things: `ulInfoLevel`, and **which ABI width
+the caller used**. All records lead with the three date/time pairs and the two sizes; they differ in
+attribute width, whether an EA-list size is present, and whether a next-entry offset chains packed
+variable-length records.
+
+> **CORRECTED (Rule 1.7) - the struct number is not the level number.** The list below used to
+> read *"`FILEFINDBUF3` ... (level 3)"*, *"`FILEFINDBUF4` ... (level 4)"*, *"(levels 3/4) a
+> next-entry offset"* and *"`FILEFINDBUF3L`/`FILEFINDBUF4L` ... (levels 11/13 counterparts)"*. All
+> four were wrong. The type names run 1, 2, 3, 4 and invite reading them as level numbers, but IBM's
+> `DosFindFirst` page says level 1 (`FIL_STANDARD`) returns `FILEFINDBUF3` and level 2
+> (`FIL_QUERYEASIZE`) returns `FILEFINDBUF4` [DOC-IBM `cp1.txt`, "DosFindFirst Parameter -
+> pfindbuf"], and the large-file levels are **11 and 12** (`FIL_STANDARDL`, `FIL_QUERYEASIZEL`;
+> 13 is `FIL_QUERYEASFROMLISTL`) [DOC-IBM `bsedos.h:745-747`]. `extended-attributes.md`
+> section 6 already had the level 1/2 mapping right.
+
+| `ulInfoLevel` | 16-bit `DosFindFirst`/`DosFindFirst2`/`DosFindNext` | 32-bit `DosFindFirst`/`DosFindNext` |
+|---|---|---|
+| 1 `FIL_STANDARD` | `FILEFINDBUF` (name at +23) | `FILEFINDBUF3` (name at +29) |
+| 2 `FIL_QUERYEASIZE` | `FILEFINDBUF2` (name at +27) | `FILEFINDBUF4` (name at +33) |
+| 11 `FIL_STANDARDL` | `FILEFINDBUF3L` (name at +37) | `FILEFINDBUF3L` |
+| 12 `FIL_QUERYEASIZEL` | `FILEFINDBUF4L` (name at +41) | `FILEFINDBUF4L` |
+
+Only levels 1 and 2 narrow at 16 bits; the large-file records are the same in both widths. The
+narrow types are what the 16-bit entry points return, which is why they live in the 16-bit header.
+The 16-bit `DosFindFirst` has no level parameter at all (it is level 1 by construction); only
+`DosFindFirst2` takes one, and `DosFindNext` takes none in either width - the record shape is fixed
+when the search is opened [DOC-IBM DDK `base/h/bsedos16.h:986-994`]. The name offsets were measured
+on Warp Server for e-business 4.50 (kernel revision 14.089) by filling the buffer with a sentinel
+byte and finding where the matched name landed; the same fixture gave +23 to a 16-bit caller and
++29 to a 32-bit one [OBS-RE - measured]. Records are packed: the 32-bit level-1/2 records are
+rounded up to a multiple of 4, the 16-bit level-1 record is not rounded, and the large-file records
+are not rounded in either width [OBS-RE - measured, same run].
+
+`FILEFINDBUF` (16-bit, level 1) - the base record the others extend:
 
 | Field | Type | Notes |
 |---|---|---|
@@ -235,12 +286,12 @@ present, and (levels 3/4) a next-entry offset that chains packed variable-length
 | `cchName` | `UCHAR` | Length of `achName` |
 | `achName` | `CHAR[CCHMAXPATHCOMP]` | Name (`CCHMAXPATHCOMP` = 256) |
 
-- `FILEFINDBUF2` adds `ULONG cbList` (full EA-set size) before `cchName` (level 2).
+- `FILEFINDBUF2` adds `ULONG cbList` (full EA-set size) before `cchName` (16-bit level 2).
 - `FILEFINDBUF3` prepends `ULONG oNextEntryOffset` (offset to the next packed record, 0 = last)
-  and **widens `attrFile` to `ULONG`** (level 3).
-- `FILEFINDBUF4` = `FILEFINDBUF3` plus `ULONG cbList` (level 4).
+  and **widens `attrFile` to `ULONG`** (32-bit level 1).
+- `FILEFINDBUF4` = `FILEFINDBUF3` plus `ULONG cbList` (32-bit level 2).
 - `FILEFINDBUF3L` / `FILEFINDBUF4L` are the large-file forms with `LONGLONG cbFile` /
-  `cbFileAlloc` (levels 11/13 counterparts).
+  `cbFileAlloc` (levels 11 and 12).
 
 `CCHMAXPATH` is 260 and `CCHMAXPATHCOMP` (single component, incl. NUL) is 256 [DOC-IBM
 `bsedos.h:630,636`].

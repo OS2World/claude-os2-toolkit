@@ -26,14 +26,45 @@ the next-older record and an `ExceptionHandler` function pointer. The end of the
 marked by `END_OF_CHAIN`, defined as `(PEXCEPTIONREGISTRATIONRECORD) -1` [DOC-IBM
 `bsexcpt.h:360`].
 
-When an exception is raised on a thread, the kernel dispatches to each handler in turn,
-newest first. A handler inspects the exception and returns one of the disposition codes
-below. `XCPT_CONTINUE_SEARCH` passes the exception to the next-older handler;
-`XCPT_CONTINUE_EXECUTION` tells the kernel to resume the thread using the (possibly
-modified) `CONTEXTRECORD`. If the chain is exhausted with no handler continuing execution,
-the process terminates. A handler may also initiate an *unwind* (via `DosUnwindException`),
-which re-dispatches to the handlers being removed with the `EH_UNWINDING` flag set so they
-can release resources before the stack is discarded. [DOC-IBM / DOC]
+When an exception is raised on a thread, its handlers are called in turn, newest first. A
+handler inspects the exception and returns one of the disposition codes below.
+`XCPT_CONTINUE_SEARCH` passes the exception to the next-older handler;
+`XCPT_CONTINUE_EXECUTION` resumes the thread using the (possibly modified) `CONTEXTRECORD`.
+If the chain is exhausted with no handler continuing execution, the process terminates. A
+handler may also initiate an *unwind* (via `DosUnwindException`), which re-dispatches to the
+handlers being removed with the `EH_UNWINDING` flag set so they can release resources before
+the stack is discarded. [DOC-IBM / DOC]
+
+> **CORRECTED (Rule 1.7):** this paragraph used to say *"the kernel dispatches to each handler
+> in turn"*. The kernel does not walk the chain. **The walk happens in ring 3, in DOSCALL1**; the
+> kernel builds the records beforehand and resumes the thread (or applies the default action)
+> afterwards.
+
+**How dispatch actually runs** [OBS-RE - the Warp 4.5 SMP kernel 14.104a and its debug build with
+IBM's symbols; DOSCALL1. The kernel routine names below are present in the 14.104a UNI kernel's
+`.sym` as well]:
+
+1. **Kernel side.** `_XCPTBuildR3DispatcherStack` fills an `EXCEPTIONREPORTRECORD` and a
+   `CONTEXTRECORD`, leaves a gap below the thread's `ESP`, pushes a frame holding the trap number
+   and pointers to the two records, and sends the thread to DOSCALL1's ring-3 dispatcher (through
+   the kernel variable `_pfnXcptDispatcher32`). The dispatcher is entered with `FS` = the TIB
+   selector. **One exception:** if the chain is empty (`FS:[0]` = `-1`), the process is not being
+   debugged and no floating-point state is involved, the kernel applies the default action itself.
+   Guard-page and floating-point exceptions always go to ring 3.
+2. **Ring-3 side.** The dispatcher walks the `FS:[0]` chain to `END_OF_CHAIN` (`-1`, not NULL),
+   validating each record and its handler's memory, and grows the stack on a guard-page fault. It
+   always finishes by calling back into the kernel with the final disposition; that call does not
+   return. `DosRaiseException` reaches the same dispatcher.
+3. **Resuming is done by the kernel.** For `XCPT_CONTINUE_EXECUTION`, `_xcptRestoreXcptContext`
+   writes the context record back into the thread's saved register frame, and the record's `EAX`
+   becomes the thread's `EAX`. For `XCPT_CONTINUE_SEARCH` from the last handler, the kernel falls
+   back to any `DosSetVec` vector or the default action. Only the floating-point state is restored
+   in ring 3, by a DOSCALL1 routine.
+
+**The tell** (a consequence of the above, not separately observed): a stack trace taken inside a
+handler has DOSCALL1 code between the faulting instruction and the handler. That is the
+dispatcher, not a second fault inside DOSCALL1. Not re-verified here: DOSCALL1's ordinals for
+these entries and the exact frame layout.
 
 ## Registering and removing a handler [DOC-IBM `bsedos.h:2379`]
 
