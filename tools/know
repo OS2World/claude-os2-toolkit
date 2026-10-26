@@ -1441,19 +1441,44 @@ def _ingest(kind, paths):
 
 
 def cmd_verify(a):
+    """--all sweeps both tables; ONE id names a row in EITHER of them.
+
+    The id goes through parse_row_id, the parser `show` and `supersede` use.
+    It was `type=int`, so `verify neg7` died in argparse before any of this
+    ran -- and a negative is the row type whose wrongness closes a question
+    permanently, so it is the one that most needs re-checking by name rather
+    than only inside a whole-store sweep.
+    """
     c = connect()
     cwd = os.path.abspath(os.path.expanduser(a.cwd))
     if not os.path.isdir(cwd):
         die(f"--cwd {cwd} is not a directory")
+    table = rid = None
+    if not a.all:
+        if a.id is None:
+            die("give a row id (12 or neg7), or --all")
+        table, rid = parse_row_id(a.id)
     if a.all:
-        rows = c.execute("SELECT id,subject,verify_cmd,verify_cmd2,corroboration "
-                         "FROM fact WHERE superseded_by IS NULL ORDER BY id"
-                         ).fetchall()
+        rows = c.execute("SELECT id,subject,verify_cmd,verify_cmd2,corroboration,"
+                         "superseded_by FROM fact WHERE superseded_by IS NULL "
+                         "ORDER BY id").fetchall()
+    elif table == "fact":
+        # NO superseded filter on a NAMED row, deliberately, and it is marked
+        # below rather than silently included: the sweep's filter defines a
+        # population (do not re-run what has been retracted), while naming an
+        # id is an explicit request for that row.
+        rows = c.execute("SELECT id,subject,verify_cmd,verify_cmd2,corroboration,"
+                         "superseded_by FROM fact WHERE id=?", (rid,)).fetchall()
     else:
-        rows = c.execute("SELECT id,subject,verify_cmd,verify_cmd2,corroboration "
-                         "FROM fact WHERE id=?", (a.id,)).fetchall()
-    if not rows and not a.all:
-        die("nothing to verify (empty selection)")
+        rows = []
+    if not rows and (a.all or table == "fact"):
+        die(f"no {fmt_row_id('fact', rid)}" if rid else
+            "nothing to verify (empty selection)", 1)
+    for r in rows:
+        if r["superseded_by"]:
+            print(f"NOTE        {fmt_row_id('fact', r['id'])} is SUPERSEDED BY "
+                  f"{fmt_row_id('fact', r['superseded_by'])} - out of the --all "
+                  f"sweep; verifying it by name anyway")
     bad = unchecked = 0
     for r in rows:
         if not r["verify_cmd"]:
@@ -1483,9 +1508,35 @@ def cmd_verify(a):
     # is out of the sweep, not deleted. The count is REPORTED below rather than
     # left implicit -- a row that silently stops being measured is the failure
     # this whole instrument is about.
-    negs = c.execute("SELECT id, question, target, verify_cmd FROM search "
-                     "WHERE verdict='absent' AND superseded_by IS NULL"
-                     ).fetchall() if a.all else []
+    if a.all:
+        negs = c.execute("SELECT id, question, target, verify_cmd, verdict, "
+                         "superseded_by FROM search "
+                         "WHERE verdict='absent' AND superseded_by IS NULL"
+                         ).fetchall()
+    elif table == "search":
+        negs = c.execute("SELECT id, question, target, verify_cmd, verdict, "
+                         "superseded_by FROM search WHERE id=?", (rid,)).fetchall()
+        if not negs:
+            die(f"no {fmt_row_id('search', rid)}", 1)
+        # A NAMED ROW STILL HAS TO BE THE KIND THIS VERB CAN ASK ABOUT.
+        # `verify` asks a search row one question -- is it STILL absent -- and
+        # reads a command that now finds something as CONTRADICTED. For a row
+        # whose recorded verdict IS a hit, finding something is the recorded
+        # result, so that reading would print the row's own finding as its
+        # refutation. Refused rather than answered.
+        if negs[0]["verdict"] != "absent":
+            die(f"{fmt_row_id('search', rid)} is a {negs[0]['verdict']!r} row, "
+                f"not a negative.\n"
+                f"       `verify` asks only whether a recorded ABSENCE still "
+                f"holds; a row that recorded a\n"
+                f"       hit cannot answer that. Read it with "
+                f"`know show {fmt_row_id('search', rid)}`.")
+        if negs[0]["superseded_by"]:
+            print(f"NOTE        {fmt_row_id('search', rid)} is SUPERSEDED BY "
+                  f"{fmt_row_id('search', negs[0]['superseded_by'])} - out of "
+                  f"the --all sweep; verifying it by name anyway")
+    else:
+        negs = []
     neg_ok = neg_bad = neg_unchecked = 0
     for r in negs:
         if not r["verify_cmd"]:
@@ -1861,7 +1912,9 @@ def main():
     p = sub.add_parser("verify", help="re-run stored verify commands",
                        formatter_class=argparse.RawDescriptionHelpFormatter,
                        epilog=VERIFY_HELP)
-    p.add_argument("id", type=int, nargs="?")
+    # NOT type=int, for the reason `supersede` gives above: `verify neg7` died
+    # in argparse, so a negative could be re-checked only by sweeping the store.
+    p.add_argument("id", nargs="?", help="fact id (12) or negative id (neg7)")
     p.add_argument("--all", action="store_true")
     p.add_argument("--cwd", default=".",
                    help="working directory for every command (default: the "
