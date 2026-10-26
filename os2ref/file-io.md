@@ -188,6 +188,11 @@ carries extended attributes to attach on create (may be `NULL`).
 beyond end-of-file is legal and, on a later write, extends the file. `DosSetFilePtrL` takes a
 `LONGLONG ib` and `PLONGLONG ibActual` for 64-bit files. [DOC-IBM `bsedos.h:1630,1636`]
 
+Measured [OBS-RE - Warp Server for e-business 4.50, kernel revision 14.089, 32-bit probe]: a
+`FILE_BEGIN` seek to -1 returns 131 `ERROR_NEGATIVE_SEEK`; method 3 returns 1 (not 87); a seek to 100
+in a 10-byte file returns 0 with the pointer at 100. A read at end of file returns 0 with 0 bytes.
+Reading a write-only handle, or writing a read-only one, returns 5.
+
 ### 4.2 `DosSetFileSize` [DOC-IBM `bsedos.h:1612` for the prototype; `cp1.txt` "DosSetFileSize" for the contract]
 
 Sets the file's length to `cbSize` - truncating (discarding data past the new end) or extending
@@ -334,7 +339,94 @@ are not rounded in either width [OBS-RE - measured, same run].
   (36), `ERROR_FILENAME_EXCED_RANGE` (206, name too long), and `ERROR_DIRECTORY` (267, a
   file/directory type mismatch) [DOC - EDM2 "DosCopy (OS/2 1.x)"].
 
+**Measured return codes** [OBS-RE - measured on Warp Server for e-business 4.50, kernel revision
+14.089, 32-bit probe, HPFS]:
+
+| Call and input | Result |
+|---|---|
+| `DosCopy`, missing source | 3 (not 2) |
+| `DosCopy`, target under a missing directory | 3 |
+| `DosCopy` onto an existing file, no flags / with `DCPY_EXISTING` | 5 / 0 |
+| `DosCopy` onto a read-only file | 5 |
+| `DosCopy` of a source another handle has open deny-all | 32 `ERROR_SHARING_VIOLATION` |
+| `DosCopy` with undefined flag 0x80000000 | 0 - the bit is ignored |
+| `DosCopy` of a directory onto a file | 267 `ERROR_DIRECTORY` |
+| `DosDelete` / `DosForceDelete`, bad path | 3 / 3; `DosForceDelete` of a missing file 2 |
+| `DosDelete`, or `DosForceDelete`, of a file open deny-all | 32 |
+| `DosDelete("*.TXT")` | 3 - wildcards are not expanded |
+| `DosDeleteDir`, missing / bad path / not empty | 3 / 3 / 5 |
+| `DosDeleteDir` of the current directory | 16 `ERROR_CURRENT_DIRECTORY` |
+| `DosQueryPathInfo` of a file open deny-all / `DosSetPathInfo` of it | 0 / 32 |
+
 ---
+
+## 6a. Name helpers - `DosEditName` and `DosSearchPath`
+
+```c
+APIRET APIENTRY DosEditName(ULONG metalevel, PSZ pszSource, PSZ pszEdit,
+                            PBYTE pszTarget, ULONG cbTarget);
+APIRET APIENTRY DosSearchPath(ULONG flag, PSZ pszPathOrName, PSZ pszFilename,
+                              PBYTE pBuf, ULONG cbBuf);
+```
+[DOC-IBM `bsedos.h:1684,2630`; `flag` bits `SEARCH_CUR_DIRECTORY` 1, `SEARCH_ENVIRONMENT` 2,
+`SEARCH_IGNORENETERRS` 4, `bsedos.h:728-731`]
+
+### `DosEditName` - what the case of the result depends on
+
+`DosEditName` applies a wildcard edit string to a name (`foo.bar` + `*.baz` gives `foo.baz`).
+IBM's own page shows it both upper-casing the result and preserving case (`file.txt` + `*E.TMP`
+giving `filE.TMP`) without saying which caller gets which [DOC-IBM `cp1.txt`, "DosEditName"].
+
+**The caller's module decides.** A 16-bit NE program **without** the long-filename bit
+(`NELONGNAMES`, set by the linker's `NEWFILES` option; see `executable-formats.md`) gets the
+result upper-cased (`FOO.BAZ`, `FILE.TMP`); the same source linked **with** the bit gets case
+preserved (`foo.baz`, `filE.TMP`). Nothing else changed between the two builds: every return code
+was identical, and every one of the 21 differing outputs was exactly the upper-cased form. A 32-bit
+LX caller gets case preserved, whether it calls the 32-bit entry point or reaches the 16-bit one
+[OBS-RE - measured on Warp Server for e-business 4.50, kernel revision 14.089: one 16-bit source
+linked twice, plus a 32-bit probe calling both entry points]. **The tell:** the same rename
+logic producing upper-case names in an old 16-bit tool and mixed case everywhere else.
+
+Measured edit rules and return codes (32-bit caller, source `foo.bar` unless shown):
+
+| Edit string, or input | Result |
+|---|---|
+| `*.*`, or `*` | `foo.bar` (unchanged) |
+| `?.???` | `f.bar` - `?` copies one character |
+| `?????` on source `ab` | `ab` - `?` past the end of the source adds nothing |
+| `.baz` | `.baz` |
+| `*.bak` on a source with no dot (`foo`) | `foo.bak` |
+| `xyz` (no wildcards) | `xyz` |
+| `""` | `""` |
+| `*.baz   ` (trailing blanks) | `foo.baz` - trailing blanks dropped |
+| `*.baz...` or `*.baz.` | `foo.baz.` - trailing dots collapse to one |
+| `metalevel` 0 or 2 | 87 - only level 1 is accepted |
+| `cbTarget` too small for the result plus its NUL (7 for a 7-character result), or 0 | **111** `ERROR_BUFFER_OVERFLOW` - IBM's list is 0, 87 and 123 only |
+| a drive, `\` or `/` in the source or the edit string | 123 `ERROR_INVALID_NAME` - names, not paths |
+| a `:` that is not the second character (`fo:o.bar`) | 0 - accepted |
+| an edit string of 259 characters / of 260 | 0 / 3 |
+
+### `DosSearchPath` - measured behaviour
+
+[OBS-RE - measured on Warp Server for e-business 4.50, 32-bit probe; results as found on disk]
+
+- Results are always fully qualified, even for a relative path element or the current directory,
+  and spelled with `\` even when the path was written with `/`. The first matching element wins.
+  A double-quoted element (`"X:\A;B"`) is one element, `;` included. An unterminated quote finds
+  nothing (2).
+- `flag` 2 (`SEARCH_ENVIRONMENT`) with an unset variable returns 203; undefined flag bits (8) and
+  `cbBuf` of 0x10000 return 87; `cbBuf` 0 returns 111 and leaves the buffer untouched.
+- **An unassigned drive does not end the search.** `Q:\;C:\OS2` (Q unassigned) still finds the
+  file in `C:\OS2` - with and without `SEARCH_IGNORENETERRS`.
+- **A buffer one byte too short does not give 111.** When the found name fits but its NUL does
+  not, the element is skipped and the call returns **2**; 111 comes only when the buffer is too
+  small to build the candidate name at all.
+- **Empty elements depend on position:** a leading empty element (`;C:\NOSUCH`) and an empty
+  element after a relative one (`SUBX;;...`) search the current directory; an empty element after
+  an absolute one (`C:\OS2;;C:\NOSUCH`) and a trailing one (`C:\NOSUCH;;`, `C:\OS2;`) do not.
+- `.` and `..` components are resolved (`X:\OS2\SYSTEM\..`); with a lower-case element (`x:\os2`)
+  only the drive letter is upper-cased in the result.
+- Directories and hidden files are found; a wildcard name is returned as written (`SPF*.TXT`).
 
 ## 7. Metadata - `DosQueryFileInfo` / `DosSetFileInfo`
 
@@ -399,6 +491,20 @@ back. `DosQueryPathInfo` is the by-path equivalent that needs no open handle. [D
 | `HANDTYPE_PROTECTED` | `0x4000` | Protected handle (opened via `DosProtectOpen`) - OR'd flag |
 | `HANDTYPE_NETWORK` | `0x8000` | Network - OR'd flag |
 
+Measured [OBS-RE - Warp Server for e-business 4.50, kernel revision 14.089, 32-bit probe]:
+
+- A file opened `OPEN_ACCESS_READWRITE | OPEN_SHARE_DENYNONE` reports state 0x0042;
+  `DosSetFHState(OPEN_FLAGS_NOINHERIT)` returns 0 and the state reads 0x00C2. Trying to change the
+  access bits returns 87.
+- `DosQueryHType` of a disk file returns type 0 with the attribute word 0x4 (IBM defines that
+  word only for character devices).
+- `DosResetBuffer` of one handle, of all handles (-1), and of a read-only handle all return 0.
+- `DosDupHandle` to a new handle shares the file pointer, and the copy's `NOINHERIT` bit is clear;
+  duplicating onto an open handle closes it and redirects it; a target of 1000 returns 114
+  `ERROR_INVALID_TARGET_HANDLE`. With the default handle table, nine more duplicates after the test's
+  own handles returned 4 `ERROR_TOO_MANY_OPEN_FILES`.
+- Every handle call on a closed handle returns 6.
+
 ---
 
 ## 9. Byte-range locking - `DosSetFileLocks`
@@ -406,9 +512,36 @@ back. `DosQueryPathInfo` is the by-path equivalent that needs no open handle. [D
 `DosSetFileLocks(hFile, pflUnlock, pflLock, timeout, flags)` atomically **unlocks** the range in
 `*pflUnlock` and then **locks** the range in `*pflLock`; either pointer may be `NULL` (a
 zero-filled range meaning "no operation"). A locked range denies read/write access to that region
-by other openers of the file until it is unlocked; the lock is advisory between processes, not a
-whole-file share mode (section 3.3 is the whole-file mechanism, ranges are the fine-grained one). [DOC-IBM
-`bsedos.h:967`; DOC - CP Reference `DosFileLocks` remarks]
+by other openers of the file until it is unlocked. It is not a whole-file share mode (section 3.3 is
+the whole-file mechanism, ranges are the fine-grained one). [DOC-IBM `bsedos.h:967`; DOC - CP
+Reference `DosFileLocks` remarks]
+
+> **CORRECTED (Rule 1.7):** this paragraph also said *"the lock is advisory between processes"*.
+> It is **mandatory**: IBM's access table has a non-owner's read and write of an exclusive range,
+> and everyone's write of a shared range, wait and then fail [DOC-IBM `cp1.txt`, "DosSetFileLocks -
+> Remarks"], and that is what was measured (below). Nothing has to cooperate for the lock to bite.
+
+**Measured** [OBS-RE - Warp Server for e-business 4.50, kernel revision 14.089, 32-bit probes and
+their children]:
+
+- **The owner is the handle, not the process.** Inside an exclusive lock taken through one handle,
+  a *second* `DosOpen` of the same file in the same process reads 33 and writes 33
+  `ERROR_LOCK_VIOLATION`, and cannot unlock the first handle's range (33). A `DosDupHandle` of the
+  owner handle reads, writes and unlocks as the owner. A handle inherited by a child is a non-owner
+  (33), as IBM says ("Access to locked file ranges is not duplicated across DosExecPgm").
+- **Non-owner I/O fails at once.** Another process's read or write of an exclusively locked range
+  returned 33 with no wait (0 ms), and a read straddling the range boundary failed the same way; a
+  read outside the range succeeded.
+- **The lock call's own timeout is honoured:** a second process's conflicting `DosSetFileLocks`
+  failed (33) after 0 ms with timeout 0 and after 2,000 ms with timeout 2000.
+- **Shared lock:** other processes read; the owner's own write is refused (33).
+- Locking a range already locked through the same handle returns 33; an overlapping range 33;
+  a negative length or offset 33; unlocking a range never locked 33.
+- After the original handle is closed, a surviving duplicate still holds the lock; once every
+  handle is closed, others' I/O succeeds.
+
+**The tell:** a second `DosOpen` of a file inside your own program gets 33 on a region the
+program itself locked.
 
 `FILELOCK` [DOC-IBM `bsedos.h:943-947`]:
 
@@ -423,8 +556,11 @@ whole-file share mode (section 3.3 is the whole-file mechanism, ranges are the f
 - `timeout` - milliseconds to wait for a contended lock before giving up.
 - `flags` - selects shared-vs-exclusive and whether the unlock/lock pair is performed atomically.
   If the medium/FSD cannot honour an atomic lock request, the call returns
-  `ERROR_ATOMIC_LOCK_NOT_SUPPORTED` (174) [DOC-IBM `bseerr.h:227`]. The individual `flags` bit
-  values are not defined in `bsedos.h` and are omitted here rather than guessed. [unverified - exact `flags` bit constants]
+  `ERROR_ATOMIC_LOCK_NOT_SUPPORTED` (174) [DOC-IBM `bseerr.h:227`]. The bits are defined in IBM's
+  reference, not in `bsedos.h`: **bit 0 Share** (0 = exclusive, the default; 1 = shared read-only
+  access for every process), **bit 1 Atomic** (unlock and lock as one operation, valid only when the
+  two ranges are equal; otherwise an error), bits 2-31 reserved [DOC-IBM `cp1.txt`,
+  "DosSetFileLocks Parameter - flags"]. *(Previously marked `[unverified]` here.)*
 
 `DosCancelLockRequest(hFile, pflLock)` cancels a pending (blocked) lock request for a range.
 Duplicating a handle duplicates access to its locked regions; closing a handle (or process exit)

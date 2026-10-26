@@ -38,6 +38,25 @@ device-name-beats-file-name precedence rule is stated explicitly under "Name or 
 Reference (`00024`) but the **interrupt entry point** (`SDevInt`) in the C/ASM headers `devhdr.h` /
 `reqpkt.h` (`DDHDR.InterruptEP`) - same field, two IBM names. [DOC-IBM]
 
+### Which executable containers `DEVICE=` accepts [OBS-RE - measured]
+
+The same 16-bit character driver (header first in its data segment, Strategy entered with `ES:BX`,
+INIT returning status 0100h) was named on a `DEVICE=` line in four link forms, one boot each, on a
+Warp 4.5 retail kernel (Warp Server for e-business, FAT16 boot volume). The evidence was a log line
+the driver's own INIT wrote, and a `DosOpen` of its `\DEV\` name run from `STARTUP.CMD`:
+
+| Container | Result |
+|---|---|
+| NE with the library flag (OpenWatcom `system os2_dll initglobal`) | **installed** - INIT ran, the device opened (rc 0) |
+| LX, module type physical device (`E32MODPDEV`, 0x20000) behind an MZ stub (`format os2 lx physdevice`) | **installed**, identical |
+| the same LX with **no MZ stub** (`option nostub`; "LX" at file offset 0, the shape `OS2DASD.DMD` ships in) | **installed**, identical |
+| the same objects as LX module type DLL (`E32MODDLL`, 0x08000) | **refused** - INIT never ran, `DosOpen` returned 3; the boot continued |
+
+So a bare LX is a legitimate driver container, and the kernel selects on the LX module-type field
+(`executable-formats.md`). A tool that reads driver files must accept an image with no DOS stub.
+Not established by this test: whether the virtual-device type (0x28000) is also refused, and which
+`SYS` message the refused case printed.
+
 ### The Strategy routine ABI [DOC-IBM]
 The kernel calls a PDD's Strategy routine by a **far call with `ES:BX` -> a request packet** (a 16:16
 pointer), with **DS = the driver's data segment**. This is a register ABI, not a stack-frame call.

@@ -288,6 +288,30 @@ the same class can be delivered.
 The focus flag values are `SIG_UNSETFOCUS` (`0`) and `SIG_SETFOCUS` (`1`) [DOC-IBM
 `bsedos.h:2374`].
 
+**`DosSetSignalExceptionFocus`, measured** [OBS-RE - measured on Warp Server for e-business 4.50,
+kernel revision 14.089, 32-bit probe; the suite kept a results table, not the raw output]:
+`*pulTimes` is the net count (set, set, unset leaves 1). Unsetting at a count of 0 returns 300
+`ERROR_ALREADY_RESET`; a flag other than 0 or 1 returns 1; setting at the count 0xFFFF returns 650
+`ERROR_NESTING_TOO_DEEP`. **A NULL `pulTimes`, or one at or above 512 MB, ends the process** with an
+exception - it is not answered with 87. The one code IBM maps to a condition, 303 for a PM process,
+was not reachable on the measuring system.
+
+**Sending signals, measured** [OBS-RE - measured on Warp Server for e-business 4.50, 32-bit and
+16-bit probes]:
+
+| Call | Result |
+|---|---|
+| `DosSendSignalException(own pid, n)` for n = 0, 2, 3, 9 | 209 `ERROR_INVALID_SIGNAL_NUMBER` |
+| `DosSendSignalException(own pid, 1 or 4)` (`XCPT_SIGNAL_INTR` / `_BREAK`) | 1 |
+| `DosSendSignalException` to a pid that does not exist | **205** `ERROR_NO_SIGNAL_SENT`, not 303 `ERROR_INVALID_PROCID` - IBM lists both and maps neither to a condition [DOC-IBM `cp1.txt`, "DosSendSignalException Return Value"] |
+| 16-bit `DosSendSignal` to a child that registered no disposition | 205 |
+| the same, to a child that registered `SIGA_IGNORE` | 0 |
+| `DosKillProcess(DKP_PROCESS` or `DKP_PROCESSTREE`, nonexistent pid) | 303 |
+| `DosKillProcess` with action 9, nonexistent pid | 13 - the action is checked before the pid |
+
+So 205 means "no process accepted the signal": the 16-bit send selects on whether the target has a
+disposition for it.
+
 ## Must-complete sections [DOC-IBM `bsedos.h:2395`]
 
 A *must-complete* section defers asynchronous signal exceptions so a critical region runs

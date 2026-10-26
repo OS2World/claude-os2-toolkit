@@ -86,6 +86,37 @@ Syntax rules:
   for the country/codepage: a list of lead-byte range definitions (high byte = inclusive start, low
   byte = inclusive stop, per range). [DOC-IBM CP ref `DosGetDBCSEv`]
 
+**Measured** [OBS-RE - Warp Server for e-business 4.50, kernel revision 14.089, `CODEPAGE=437,850`,
+32-bit probe; codes named from `bseerr.h`]:
+
+- `DosQueryCp` with a 32-byte buffer returned 12 bytes: the process code page (437), then the
+  prepared list (437, 850). With a buffer of 0 or 2 bytes it returns 473 `ERROR_CPLIST_TOO_SMALL`
+  and writes nothing; with 4 bytes it returns **473 and still writes** what fits (the process code
+  page, count 4). So a 473 can come with usable data.
+- `DosSetProcessCp(850)` returns 0 and makes the first entry 850; an `EXEC_SYNC` child then reports
+  850 (inherited). A code page not in `CODEPAGE=` (852), and 0, return 472
+  `ERROR_INVALID_CODE_PAGE`.
+- `DosQueryCtryInfo` for the configured country returns **38 bytes** of `COUNTRYINFO` (country 1,
+  the code page asked for or the process's when 0, date MDY, `$`, `,` `.` `-` `:`, 2 decimals, list
+  separator `,`). A buffer of 0 or 3 bytes returns 399 `ERROR_NLS_TABLE_TRUNCATED` with nothing
+  written; 4 bytes returns **399 with those 4 bytes written**. A country with no entry returns
+  398 `ERROR_NLS_NO_CTRY_CODE`. Asking for code page 852, which is not prepared, still returns 0.
+
+## Hardware configuration - `DosDevConfig`
+
+```c
+APIRET APIENTRY DosDevConfig(PVOID pdevinfo, ULONG item);   /* bsedos.h:2835 */
+```
+`item` is one of `DEVINFO_PRINTER` 0, `DEVINFO_RS232` 1, `DEVINFO_FLOPPY` 2,
+`DEVINFO_COPROCESSOR` 3, `DEVINFO_SUBMODEL` 4, `DEVINFO_MODEL` 5, `DEVINFO_ADAPTER` 6
+(`bsedos.h:2838-2844`); the answer is one byte. Measured [OBS-RE - Warp Server for e-business 4.50
+on a virtual machine with two serial ports, no parallel port and an empty floppy drive]: 0 printers,
+2 serial ports, 1 diskette drive (the drive counts with no disk in it), coprocessor 1, submodel 1,
+model 252 (0xFC, AT class), adapter 1. Item 7 and item 0xFFFFFFFF return 87 **and write 0 into the
+byte**. A NULL `pdevinfo` returns 87 rather than trapping. The values come from a table the kernel
+copies from the loader at boot [OBS-RE - the kernel's `DosDevConfig` worker read] - a boot-time
+snapshot.
+
 `SET RUNWORKPLACE=` also lives in this environment - it is the variable the Presentation-Manager
 shell reads (boot-sequence Stage 12) to choose the desktop program.
 

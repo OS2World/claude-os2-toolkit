@@ -125,11 +125,37 @@ and repeat. [DOC - EDM2 "DosQueryProcAddr".]
 |---|---|---|
 | `NO_ERROR` | `0` | Address returned in `*ppfn` |
 | `ERROR_INVALID_HANDLE` | `6` | `hmod` is not a valid loaded-module handle |
-| `ERROR_INVALID_NAME` | `123` | `pszName` does not name an export of the module |
+| ~~`ERROR_INVALID_NAME`~~ | ~~`123`~~ | ~~`pszName` does not name an export of the module~~ - see the correction below |
 | `ERROR_INVALID_ORDINAL` | `182` | `ordinal` does not name an export of the module |
 | `ERROR_ENTRY_IS_CALLGATE` | `65079` | The entry point is reachable only via a call gate |
 
 [DOC - EDM2 "DosQueryProcAddr".]
+
+> **CORRECTED (Rule 1.7):** for a name the module does not export, real OS/2 returns **127
+> `ERROR_PROC_NOT_FOUND`**, not 123, and leaves `*ppfn` untouched [OBS-RE - measured on Warp Server
+> for e-business 4.50, kernel revision 14.089, against a DLL of the probe's own]. A by-name lookup
+> on `DOSCALLS` likewise returns 127. Code that tests for 123 to mean "no such export" never sees
+> it.
+
+**More measured module-manager results** [OBS-RE - same system; a 32-bit probe and two DLLs of its
+own, plus lookups on `DOSCALLS`, `DOSCALL1` and `UCONV`]:
+
+- `DosLoadModule` of a missing DLL returns 2 and names it in the object buffer. A DLL whose
+  initialisation routine fails returns 295 `ERROR_INIT_ROUTINE_FAILED`, is not loaded, and leaves
+  the object buffer untouched. When DLL B imports DLL A, A's initialisation runs before B's.
+- `INITGLOBAL` initialisation runs once system-wide; `INITINSTANCE` runs in every process; a
+  process that ends with the DLL loaded runs its termination once. `DosFreeModule` runs the
+  termination; freeing the same handle again returns 6.
+- `DosQueryModuleHandle` of a DLL that is not loaded returns 126 `ERROR_MOD_NOT_FOUND`.
+- `DosQueryModuleName` returns the path the module was loaded from; a buffer too small returns 24
+  `ERROR_BAD_LENGTH`; a bad handle 6.
+- `DosQueryProcAddr` and `DosQueryProcType` with the program's own (EXE) handle return 6.
+- **`DOSCALLS` and `DOSCALL1` are different modules to the loader.** `DosLoadModule("DOSCALLS")`
+  returns its own handle (7 on that system), which `DosQueryModuleName` reports as
+  `C:\OS2\DLL\DOSCALLS.DLL`, while `DOSCALL1` has another (0xF7). An ordinal looked up through
+  `DOSCALLS` (348, `DosQuerySysInfo`) gives the same address as through `DOSCALL1`, and
+  `DosQueryModFromEIP` on that address reports `DOSCALL1`. A by-name lookup works on `DOSCALL1`
+  (`DOSSUBALLOC`, reported `PT_16BIT`) and fails with 127 on `DOSCALLS`.
 
 ### `DosQueryModuleHandle` [DOC-IBM]
 
@@ -164,6 +190,39 @@ non-zero, else by `pszName`) and reports its code width in `*pulproctype`:
 (`bsedos.h:2179-2180`.) This lets a caller thunking across the 16/32 boundary discover which
 convention a resolved entry point actually uses (see `thunking.md`).
 
+### `DosGetResource` / `DosFreeResource` / `DosQueryResourceSize` - measured failure codes
+
+```c
+APIRET APIENTRY DosGetResource(HMODULE hmod, ULONG idType, ULONG idName, PPVOID ppb);
+APIRET APIENTRY DosFreeResource(PVOID pb);
+APIRET APIENTRY DosQueryResourceSize(HMODULE hmod, ULONG idt, ULONG idn, PULONG pulsize);
+```
+(`bsedos.h:2284-2296`; `DosGetResource2` is a macro for `DosGetResource`.) `hmod` 0 means the
+calling program's own EXE.
+
+**The three failures are 126, 87 and 87 - and 126 is not "resource not found"** [OBS-RE - measured
+on Warp Server for e-business 4.50, kernel revision 14.089, with a DLL of the probe's own; the
+kernel's loader read with its symbols]:
+
+| Condition | Result |
+|---|---|
+| `hmod` is not a live module (never was one, or freed) | 126 `ERROR_MOD_NOT_FOUND` (IBM's list has 6) |
+| a live module with no resources at all (including `hmod` 0 for an EXE without any) | 87 |
+| a live module that has resources, but not this type/id | 87 |
+| `idType` above 0xFFFF | 87 |
+
+`DosQueryResourceSize` gives the same codes for the same conditions, and leaves `*pulsize`
+untouched when it fails; a failed `DosGetResource` leaves `*ppb` untouched.
+
+**References are counted per resource object.** `DosGetResource` of the same resource twice gives
+the same address; two gets need two `DosFreeResource` calls (0, 0) and a third returns 487. Two
+different resource ids that the linker placed in one object share that count: get id 1, get id 3,
+then three frees of id 3 return 0, 0, 487. `DosQueryResourceSize` takes no reference.
+`DosFreeResource` of an address inside a resource frees it (0); of a static, NULL or a stack address
+it returns 87; of a code address, 1.
+**The tell:** code that maps 87 to "bad handle", or 126 to "missing resource", reports the wrong
+problem.
+
 ### `DosQueryModFromEIP` and `DosReplaceModule` (related) [prototypes DOC-IBM; behavior inferred from the parameter names]
 
 ```c
@@ -173,7 +232,9 @@ APIRET APIENTRY DosReplaceModule(PSZ pszOldModule, PSZ pszNewModule, PSZ pszBack
 ```
 (`bsedos.h:2194-2199, 2213-2220`.) `DosQueryModFromEIP` maps a code address (`Address`) back to the
 module handle, object number, name, and offset that contain it - the basis of a symbolic
-backtrace. `DosReplaceModule` swaps a module's on-disk file (optionally saving a backup) so a
+backtrace. **The object number is zero-based** (LX object 1 is reported as 0); an address in no
+module returns 487 `ERROR_INVALID_ADDRESS`; a `BuffLen` of 2 still returns 0 [OBS-RE - measured on
+Warp Server for e-business 4.50, kernel revision 14.089]. `DosReplaceModule` swaps a module's on-disk file (optionally saving a backup) so a
 loaded module can be updated. (The prototypes are transcribed from `bsedos.h`; the header carries
 no descriptive prose, so the behavioral summaries above are read from the parameter names, not a
 documented sentence.) The related function `DosQueryModFromCS` - the callable Toolkit symbol is

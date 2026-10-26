@@ -75,6 +75,14 @@ corroborated by the EDM2 DOSCALLS ordinal table.
     (the drive's creation date/time) + `vol` (the `VOLUMELABEL`) - no FS-type field, corroborating
     the correction below. The volume label is limited to 11 bytes, and trailing blanks are stripped
     (not counted as part of, nor returned in, the label).
+  - Measured [OBS-RE - Warp Server for e-business 4.50, kernel revision 14.089, HPFS, 32-bit
+    probe]: `DosSetFSInfo` with a 12-character label returns 154 `ERROR_LABEL_TOO_LONG` and leaves
+    the label unchanged; a label containing `*` returns 123; a 1-byte buffer returns 122
+    `ERROR_INSUFFICIENT_BUFFER`; info level 1 returns 124; drive 27 returns 15. Setting the same
+    label again returns 0. Trying `A<c>B` for one character `c` at a time, only `*`, `?` and `.`
+    were refused (123); every other character tried was accepted, including
+    `/ \ | , ; : + = < > [ ] " &`, a space, and `- _ ~ ! @ # $ % ^ ( ) ' { }`.
+    `DosQueryFSInfo` with drive 27 returns 15, a 4-byte buffer 111, level 3 124.
   - **CORRECTED (2026-07-26, Rule 1.7):** this line previously read "volume label, **serial
     number**, file-system type." The **file-system type is wrong** - `FSINFO` (`bsedos.h:928-934`)
     carries only creation date/time + volume label; there is no FS-type field. The file-system

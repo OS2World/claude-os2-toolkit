@@ -239,6 +239,32 @@ APIRET APIENTRY DosWaitChild(ULONG action,       /* DCWA_* : which children     
 specific child (0 = any child). Only children started with a result-retaining mode
 (`EXEC_ASYNCRESULT` / `EXEC_ASYNCRESULTDB`) can be waited on this way.
 
+**Measured return codes for process creation and waiting** [OBS-RE - measured on Warp Server for
+e-business 4.50, kernel revision 14.089, 32-bit probe; codes named from `bseerr.h`]:
+
+| Call and input | Result |
+|---|---|
+| `DosWaitChild` with no children at all | 128 `ERROR_WAIT_NO_CHILDREN` |
+| `DosWaitChild` on an `EXEC_ASYNCRESULT` child already collected | 128 |
+| `DosWaitChild(DCWW_NOWAIT)` on a running child | 129 `ERROR_CHILD_NOT_COMPLETE` |
+| `DosWaitChild(DCWW_WAIT)` on a running **`EXEC_ASYNC`** child (no result kept) | blocks **until that child ends**, then returns 128 |
+| `DosWaitChild` naming the caller's own pid, or pid 0xFFF0 | 128 (not 184 or 303) |
+| `DosWaitChild` with action 5, or option 5 | 13 `ERROR_INVALID_DATA` (not 87) |
+| `DosExecPgm`, missing program | 2; the object-name buffer holds the name as passed |
+| `DosExecPgm`, missing directory | 3; object name as passed, upper-cased |
+| `DosExecPgm`, a text file named `.EXE` | 193 `ERROR_BAD_EXE_FORMAT`; object name the full upper-cased path |
+| `DosExecPgm`, a program importing from a missing DLL | 2; the object name is the **DLL's** module name |
+| `DosExecPgm`, exec flag 7 | 13 |
+| `EXEC_SYNC` child exiting with 70000 | `codeResult` 4464 - the result is a 16-bit value (70000 mod 65536) |
+| `DosKillProcess` of a child, then `DosWaitChild` | 0, then `codeTerminate` 3 (`TC_KILLPROCESS`) |
+| `DosKillProcess` of a child that has ended but not been collected | 303 |
+| `DosKillProcess` with action 5 | 13 |
+
+A handle opened `OPEN_FLAGS_NOINHERIT` reads as 6 (`ERROR_INVALID_HANDLE`) in the child; the child
+starts in the parent's current drive and directory with the parent's verify setting. **The tell:**
+a "hang" in `DosWaitChild` on a child you started `EXEC_ASYNC` - it is waiting for that child to
+end, and will then report 128 because there is no result to give.
+
 ### `DosKillProcess` [DOC-IBM - bsedos.h]
 
 ```c
@@ -278,6 +304,31 @@ new thread's ID. `cbStack` is the stack size to allocate (rounded up as the syst
 | 1 | `CREATE_SUSPENDED` | create the thread suspended; a later `DosResumeThread` starts it |
 | 0 | `STACK_SPARSE` | reserve stack, commit pages on demand |
 | 2 | `STACK_COMMITTED` | commit the whole stack up front |
+
+**Measured behaviour** [OBS-RE - measured on Warp Server for e-business 4.50, kernel revision
+14.089, retail SMP, 32-bit probe; three concurrent copies agreed]:
+
+- **TIDs are reused lowest-first.** With threads 2 and 3 alive and 4 ended, the next thread
+  created got TID 4. The main thread is TID 1, and a new thread's `tib2_ultid` matches the TID
+  returned in `*ptid`.
+- **A bad `ptid` faults; it does not return 115.** Passing `ptid` = 0x10, or a pointer into
+  read-only code, ended the calling process with an exception (`codeTerminate` 4,
+  `TC_EXCEPTION`), not `ERROR_PROTECTION_VIOLATION`.
+- **The thread ceiling.** On a system with `THREADS=1024` in CONFIG.SYS, one process created 897
+  threads before `DosCreateThread` returned 164 `ERROR_MAX_THRDS_REACHED`. The limit is system-wide
+  (`THREADS=` counts every process's threads), so the number a program reaches depends on what
+  else is running.
+- `CREATE_SUSPENDED` threads do not run until `DosResumeThread`; `DosWaitThread` with TID 0 returns
+  whichever thread ended, `DCWW_NOWAIT` on a live thread returns 294 `ERROR_THREAD_NOT_TERMINATED`,
+  and a TID never created returns 309 `ERROR_INVALID_THREADID`.
+
+`DosVerifyPidTid(pid, tid)`, measured [OBS-RE - same system]: the caller's own pid with TID 1
+returns 0, with TID 99 or TID 0 returns 309 `ERROR_INVALID_THREADID`; pid 0 and pid 0xFFFF return
+303 `ERROR_INVALID_PROCID`; a live child's TID 1 returns 0 and its unused TID 2 returns 309; a child
+that has ended returns 303.
+
+A 16-bit thread created by `DosCreateThread` starts with a usable `DS` (measured, 16-bit probe with
+its stack in its own `DosAllocSeg` segment).
 
 (`CREATE_*` and `STACK_*` are combined with bitwise OR; `CREATE_READY`/`STACK_SPARSE` are the
 zero defaults.)
@@ -439,6 +490,29 @@ bsedos.h function codes]:
 For `EXLST_ADD`, the upper bits of `ordercode` carry an ordering value (0 = run earliest,
 higher = later), letting cooperating routines sequence their cleanup.
 
+**Measured** [OBS-RE - measured on Warp Server for e-business 4.50, kernel revision 14.089, a
+32-bit program with a 32-bit DLL; codes named from `bseerr.h`]:
+
+| Input | Result |
+|---|---|
+| `EXLST_ADD` of a routine already on the list (same order value) | 183 `ERROR_ALREADY_EXISTS` |
+| the same routine added again with a different order value | 0 - a second, separate record |
+| `EXLST_REMOVE` with an order byte set | 13 `ERROR_INVALID_DATA` |
+| `EXLST_REMOVE` (no order byte) | 0, and again 0 - one record each time |
+| `EXLST_REMOVE` once nothing is left | 127 |
+| `EXLST_EXIT` outside an exit, or function code 4 | 1 |
+| `EXLST_ADD` with bit 0x40 set in the function byte | 1 - refused |
+| `DosFreeModule` of a DLL that has a routine on the list | 12, and the routine still runs at exit |
+| `DosExecPgm` from inside an exit-list routine | 1 - refused while exit processing runs |
+
+- **Order:** the order value only sorts, lowest first. Bit 0x80 of the *function* byte puts that
+  routine ahead of all others whatever its order value. A DLL's own termination routine runs
+  after every exit-list routine.
+- **One routine's failure does not stop the next:** a routine that faults with no handler, or
+  calls `DosExit(EXIT_PROCESS)`, is followed by the next routine on the list.
+- The termination code a routine receives for an unhandled trap on thread 1 is 4 (`TC_EXCEPTION`).
+- Inside a routine, `pib_flstatus` has `PS_EXITLIST` (0x01) set (0x27 in an `EXEC_SYNC` child).
+
 ---
 
 ## Critical sections and must-complete
@@ -457,6 +531,16 @@ exclusion mechanism for a whole process; the calls nest.
 [DOC - EDM2 "DosExitCritSec (OS/2 1.x)"] An outstanding-entry count is kept: `DosEnterCritSec`
 increments it, `DosExitCritSec` decrements it, and normal thread dispatching is only restored
 when it returns to 0. An excess `DosExitCritSec` returns `ERROR_CRITSEC_UNDERFLOW`.
+
+**Measured** [OBS-RE - measured on Warp Server for e-business 4.50, kernel revision 14.089, retail
+SMP; one functional run and two concurrent stress copies]: `DosExitCritSec` without an entry
+returns 485 `ERROR_CRITSEC_UNDERFLOW`; after one `DosExitCritSec` of two nested entries the other
+threads are still frozen; nesting is refused after **65,535** entries with 484
+`ERROR_CRITSEC_OVERFLOW`. Under contention, a thread calling `DosEnterCritSec` while another
+thread of the process holds it gets 309 `ERROR_INVALID_THREADID`, and its matching
+`DosExitCritSec` then returns 485. **The tell:** code that treats `DosEnterCritSec` as unable to
+fail runs its "protected" region unprotected whenever two threads race to enter - check the return
+code.
 
 ### `DosEnterMustComplete` / `DosExitMustComplete` [DOC-IBM - bsedos.h]
 

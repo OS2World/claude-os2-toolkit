@@ -36,6 +36,32 @@ are returned through caller-supplied out-pointers and are only valid when the fu
 `ERROR_USER_DEFINED_BASE` is defined as `0xFF00` (65280): codes at or above this base are
 reserved for application-defined use and are never assigned by the system. [DOC-IBM: `bseerr.h`]
 
+### Two things the convention does not promise [OBS-RE - measured on Warp Server for e-business 4.50]
+
+**A bad pointer is not reliably answered with 87.** Many calls do not check pointer arguments,
+and a NULL or wild pointer ends the process with an exception instead of returning a code. Measured
+cases:
+
+| Call | NULL / bad pointer gives | Where |
+|---|---|---|
+| `DosCreateDir(NULL, NULL)` | SYS3175 trap in DOSCALL1 | `file-io.md` |
+| `DosSetSignalExceptionFocus` with NULL or >= 512 MB `pulTimes` | the process ends | `exceptions.md` |
+| `DosCreateThread` with a bad `ptid` | the process ends (not 115) | `process-thread.md` |
+| `DosCreateQueue` with a NULL name, as the first queue call | the process ends silently | `ipc-synchronization.md` |
+| 16-bit `DosAllocShrSeg(cb, name, NULL)` | trap | - |
+| `VioGetPhysBuf` with an invalid far pointer | trap | `vio-kbd-mou.md` |
+| `DosDevConfig(NULL, item)` | 87, no trap | `config-and-environment.md` |
+| `DosErrClass` with a NULL class pointer | 87, no trap | below |
+
+So 87 for a NULL is the exception, not the rule. Pass valid pointers; and in a test harness,
+run any case that may trap last, after cleanup, because the trap ends every case after it.
+
+**A failure can still write output.** `DosQueryCp` returning 473 and `DosQueryCtryInfo` returning
+399 both fill the part of the buffer that fits; `DosDevConfig` returning 87 writes 0 into the
+result byte; `DosQueryMessageCP` returning 111 writes what fits (`config-and-environment.md`,
+`DosQueryMessageCP` below). Do not assume an out-buffer is untouched after an error, and do not
+assume it is meaningful either - check what each call documents or what was measured.
+
 ### How the header is conditionally included [DOC-IBM]
 `bseerr.h` splits the code space into two sets guarded by preprocessor symbols: codes **0-302**
 are compiled when `INCL_DOSERRORS` or `INCL_ERROR_H` is defined (the header calls this
@@ -302,6 +328,18 @@ program exceptions, at process scope. The flags (from `bsedos.h`):
 | `FERR_ENABLEEXCEPTION` | `0x00000000L` | enable exception pop-ups |
 | `FERR_DISABLEEXCEPTION` | `0x00000002L` | disable exception pop-ups |
 
+**`AUTOFAIL=YES` overrides `DosError`** [OBS-RE - measured on Warp Server for e-business 4.50,
+kernel revision 14.089, booted with and without `AUTOFAIL=YES` in CONFIG.SYS; the process's
+setting was read back through `DosSysCtl` function 27, an undocumented interface]. With
+`AUTOFAIL=YES` every process starts with the value 2 (hard-error pop-ups off, exception pop-ups
+off), and `DosError(0)` .. `DosError(3)` each return 0 but leave it at 2 - a program cannot turn
+the pop-ups back on. Without the line, a process starts at 1 and `DosError` sets 0-3 as asked.
+`DosError(4)` returns 87; `DosError(0x80000001)` returns 0. **The tell:** a program that calls
+`DosError(FERR_ENABLEHARDERR)` still gets no "drive not ready" pop-up on a machine whose CONFIG.SYS
+has `AUTOFAIL=YES`.
+
+`DosErrClass` with a NULL class pointer returns 87 (no trap) [OBS-RE - same system].
+
 ---
 
 ## Abnormal-termination codes - `TC_*` [DOC-IBM]
@@ -364,6 +402,16 @@ APIRET APIENTRY DosInsertMessage(PCHAR* pTable,   /* in:  substitution strings *
 Same variable substitution as `DosGetMessage`, but on a message string already held in memory
 rather than read from a file. (In C++ compilation `pszMsg` is typed `PCSZ`.)
 
+Measured [OBS-RE - Warp Server for e-business 4.50, kernel revision 14.089, 32-bit probe]:
+
+| Message, inserts | Result |
+|---|---|
+| `A%1B%2C%9D%0`, 9 inserts `<0>`..`<8>` | 0, `A<0>B<1>C<8>D%0` - `%1` is the first insert, `%9` the ninth, and `%0` is left as text |
+| `x%1y%2z`, 1 insert | 0, `x<0>y%2z` - a `%n` with no insert is left as text |
+| 10 inserts | 320 `ERROR_MR_INV_IVCOUNT` (the limit is 9); `*pcbMsg` untouched |
+| `abc%1def%2ghi` into a 5-byte buffer | 316 `ERROR_MR_MSG_TOO_LONG`, `*pcbMsg` 5 |
+| `plain`, 0 inserts | 0, `plain` |
+
 ### `DosPutMessage` [DOC-IBM]
 ```c
 APIRET APIENTRY DosPutMessage(HFILE hfile,   /* in: file handle to write to */
@@ -382,6 +430,12 @@ APIRET APIENTRY DosQueryMessageCP(PCHAR  pb,          /* out: buffer for the cod
 ```
 Reports the code pages and languages a message file contains, so a caller can select the correct
 one. (In C++ compilation `pszFilename` is typed `PCSZ`.)
+
+Measured through the entry point the Toolkit's stub calls (`DosIQueryMessageCp`, with an empty
+message segment) [OBS-RE - Warp Server for e-business 4.50]: the full path of `OSO001.MSG` returns 0
+and 10 bytes; a **bare file name returns 2** when the session has no `DPATH` (a detached ssh session
+had none) - the file is looked up along `DPATH`, not the current directory; a missing file returns
+2; a 3-byte buffer returns 111 with those 3 bytes written.
 
 ---
 

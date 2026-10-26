@@ -216,6 +216,44 @@ For `VioScrollUp`, a coordinate or line count larger than its maximum is **clamp
 maximum rather than rejected; `TopRow`=`LeftCol`=0 with `BotRow`=`RightCol`=`Lines`=65535 (-1)
 fills the whole screen with the `Cell` char-attribute pair. [DOC - EDM2 "VioScrollUp (FAPI)".]
 
+**Measured: what provokes which code** [OBS-RE - measured on Warp Server for e-business 4.50,
+kernel revision 14.089, a full-screen 16-bit program and its 32-bit helper in an 80x25 colour text
+mode, VGA and SVGA display drivers; codes named from `bseerr.h`]:
+
+- **A zero length is not an error.** Every write, read and scroll call tried with length 0 (13 of
+  them) returned 0; `VioReadCellStr`/`VioReadCharStr` returned 0 bytes. Only the structure calls
+  check a size: `VioGetMode`/`VioSetMode` with `cb` 0 or 2, and `VioGetConfig` with `cb` 1, return 438
+  `ERROR_VIO_INVALID_LENGTH`; `VioGetMode` with `cb` 2 returns 0 and fills those 2 bytes.
+- **The handle must be 0** for a full-screen program: `hvio` 1 returns 436 from every call.
+- **"Reserved" words are not checked:** `VioGetCp` and `VioSetCp` with the reserved word set to 1
+  return 0.
+- `VioSetCurType` with width 2 in text mode returns 356 `ERROR_VIO_WIDTH`; a percentage below -100
+  returns 421. `VioScrollUp` with TopRow greater than BotRow returns 358, and with LeftCol greater
+  than RightCol 359; out-of-range values are clamped, as described above, not refused.
+- `VioSetCp(999)` returns 469 `ERROR_VIO_BAD_CP`; **a valid code page that is not in `CODEPAGE=`
+  (852 with `CODEPAGE=437,850`) also returns 469**, not 471 `ERROR_VIO_NA_CP`; `VioSetCp(-1)` with
+  no user font set returns 0, not 470. 470 and 471 were not produced by any input tried, including
+  a boot with no `CODEPAGE=` line.
+- `VioSetCp(850)` then `VioGetCp` reads back 850. After a user font is set with `VioSetFont`,
+  `VioGetCp` returns 468 `ERROR_VIO_USER_FONT`.
+- **Pointers are not checked.** The VIO read/write paths do no NULL or range check of their own
+  [OBS-RE - DOSCALL1's VIO code read], and an invalid far pointer passed to `VioGetPhysBuf` trapped
+  the caller [OBS-RE - measured]. Do not expect 421 or 350 for a bad pointer.
+
+**In a background session the answers change** [OBS-RE - same system, three full-screen copies of
+the program running at once, only one of them in the foreground]:
+
+| Call | Foreground | Background |
+|---|---|---|
+| `VioShowBuf`, including with an offset past the LVB or in a graphics mode | 421 / 355 as appropriate | **0** - a no-op that does not check its arguments |
+| `VioGetCp` after a user font is set | 468 | 0 |
+| `VioGetFont` | the font (for example 9x16, 4096 bytes) | **467** `ERROR_VIO_FONT` - no font can be read |
+| `VioSetFont` with the font just read | 0 | 421 (it was handed the empty result) |
+| `VioGetConfig` under an SVGA driver | adapter 10, display 0xFFFF | adapter 10, display 19 |
+
+**The tell:** a full-screen program that works when it starts in the foreground and fails only
+when started in, or switched to, the background - look first at `VioGetFont`/`VioSetFont`.
+
 > Note: the EDM2 "VioWrtCharStrAtt" page describes the `Attr` argument as the address of **1 or
 > 3 attribute bytes** per character (SBCS vs. multi-byte). The header (section 2.2) types it `PBYTE`
 > (single attribute byte); header value retained. [DOC - EDM2 "VioWrtCharStrAtt".]

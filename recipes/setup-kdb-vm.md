@@ -22,6 +22,22 @@ kdb_hang_triage.py     # diagnose a frozen system (never reboot first)
 ```
 `tools/kdb/` is the reusable Python library (connection/parser/session) if you script your own.
 
+**Keep a client on the debug pipe for the whole session.** With VirtualBox's host-pipe serial
+mode, a guest whose debug pipe has **no client connected** has been seen to freeze intermittently.
+Screenshots showed no progress, and breaking in found the CPU in ordinary kernel code, not idle, with
+no breakpoint set; the freeze cleared the moment any client connected. The one-shot tools connect
+and disconnect per command, which leaves the pipe empty between commands - exactly that condition.
+So start the passthrough first and point everything at its proxy:
+```sh
+kdb_passthrough.py > /tmp/kdb_passthrough.log 2>&1 &
+export KDB_DBGPORT=/tmp/dbgport_proxy      # or: kdb_cmd.py --socket /tmp/dbgport_proxy ...
+```
+With the passthrough running, a workload that had reliably triggered the freeze (an editor in a
+VIO window) stopped doing so. The mechanism is not established; nothing in IBM's debugger
+documentation involves modem-control lines (it specifies a three-wire null-modem cable), so this
+is most likely VirtualBox's pipe behaviour rather than the debugger's protocol. [OBS-RE - one VM,
+observed repeatedly]
+
 ## Common flow
 Break at the `##` prompt (BREAK.EXE) -> set breakpoints (`bp %<addr>`, or hardware write breakpoints
 `ba w4 <addr>`) -> `g` to continue -> inspect at the hit (`r`, `dd`, `u`, `ln <sym>`). Symbol lookup

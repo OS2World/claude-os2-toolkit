@@ -161,6 +161,31 @@ APIRET APIENTRY DosGetSharedMem(PVOID pb, ULONG flag);                          
 A shared object obtained by any of these is released with `DosFreeMem`; the object's storage
 persists as long as any process still holds it.
 
+**Measured** [OBS-RE - measured on Warp Server for e-business 4.50, kernel revision 14.089, a
+32-bit program and its child; codes named from `bseerr.h`]:
+
+| Input | Result |
+|---|---|
+| `DosAllocSharedMem` of a name that already exists | 183 `ERROR_ALREADY_EXISTS` |
+| a name without the `\SHAREMEM\` prefix (`DosAllocSharedMem` or `DosGetNamedSharedMem`) | 123 `ERROR_INVALID_NAME` |
+| `DosGetNamedSharedMem` of a name that does not exist | 2 |
+| `DosGetNamedSharedMem` in the allocating process itself | 0, the same address |
+| a named object whose only holder exits without freeing it, then asked for by name | 2 - the name goes when the last holder exits |
+| `DosGetSharedMem` of an address in no object | 487 `ERROR_INVALID_ADDRESS` |
+| `DosFreeMem` by a process that has not got the object, or at an interior address | 487 |
+
+- **A gettable object is not there until it is got.** In a child that has not called
+  `DosGetSharedMem`, `DosQueryMem` on the object's address returns 0 with `PAG_FREE` (0x4000), and a
+  read of it faults. After the get, the flags are 0x12011 (read, commit, shared, base) and the read
+  works.
+- `DosGetSharedMem` asking for read/write on an object created read-only returns 0.
+- Access added later applies at once: a child that got the object read-only and had already read
+  it could write it after the parent's `DosGiveSharedMem` granted read/write.
+- An uncommitted gettable object reports the same flags (0x12003) in its allocator and in a getter.
+
+**The tell:** a child faults reading a shared address that the parent can see - the child has not
+called `DosGetSharedMem` (or been given the object) yet.
+
 > **C++ prototypes.** Under `__cplusplus`, `bsedos.h` declares `pszName` as `PCSZ` (const) for
 > `DosAllocSharedMem` (line 1877) and `DosGetNamedSharedMem` (line 1867); the C prototypes use
 > `PSZ`. Signature and behaviour are otherwise identical. [DOC-IBM `bsedos.h`]
@@ -206,6 +231,29 @@ function (`bsedos.h:1892-1911`). [DOC-IBM]
 > `DosSubUnsetMem` releases only the suballocator's own management resources, not the object.
 > It returns `ERROR_DOSSUB_CORRUPTED` (`532`) if the pool's control data is corrupt.
 
+**Measured** [OBS-RE - measured on Warp Server for e-business 4.50, kernel revision 14.089, 32-bit
+probe; codes named from `bseerr.h`]:
+
+| Input | Result |
+|---|---|
+| `DosSubSetMem(INIT)` with `cb` 0x48 | 0 - the smallest pool accepted |
+| `INIT` with `cb` 0x40, or with an undefined flag bit (0x41) | 87 |
+| `DosSubSetMem` without `INIT` on a live pool | 0 (attaches) |
+| `DosSubSetMem` without `INIT` on zeroed memory that was never a pool | 87 |
+| `GROW` to a larger size / to a smaller size | 0 / 310 `ERROR_DOSSUB_SHRINK` |
+| `DosSubAllocMem` of 64 bytes in a new pool | 0; the block is at pool base + 0x40 |
+| free that block and allocate 64 again | the same offset (first fit) |
+| allocate 13 bytes, then 8 | the second block starts 16 bytes after the first |
+| `cb` 0 | 87 |
+| larger than the pool | 311 `ERROR_DOSSUB_NOMEM` |
+| `DosSubFreeMem` of an address outside the pool | 87 |
+| the same block freed twice | 312 `ERROR_DOSSUB_OVERLAP` |
+| `DosSubUnsetMem` twice | 0 both times |
+
+The 13-then-8 result means blocks are rounded to **8** bytes on this system, not the multiple of
+four EDM2 describes above. A `DOSSUB_INIT | DOSSUB_SERIALIZE` pool in named shared memory, hammered
+by two processes at once (2,000 allocate/free pairs each), stayed consistent.
+
 ### `DOSSUB_*` flags for `DosSubSetMem` [DOC-IBM `bsememf.h`]
 
 | Flag | Value | Meaning |
@@ -250,6 +298,39 @@ returned flag word can carry:
 | `0x00000010` | `PAG_RESIDENT` | page is resident (not swappable) |
 | `0x00000020` | `PAG_SWAPPABLE` | page is swappable |
 | `0x00000030` | `PAG_DISCARDABLE` / `PAG_TYPEMASK` | page is discardable / type mask |
+
+## 16-bit huge segments - measured sharing behaviour
+
+A 16-bit program allocates a "huge" block as a run of 64 KB segments whose selectors are spaced
+by a fixed increment [DOC-IBM DDK `base/h/bsedos16.h:1119-1156`]:
+
+```c
+APIRET APIENTRY DosAllocHuge(USHORT cSegs, USHORT cbPartialSeg, PSEL psel,
+                             USHORT cMaxSegs, USHORT fsAlloc);
+APIRET APIENTRY DosReallocHuge(USHORT cSegs, USHORT cbPartialSeg, SEL sel);
+APIRET APIENTRY DosGetHugeShift(PUSHORT pusShiftCount);   /* increment = 1 << shift */
+APIRET APIENTRY DosGiveSeg(SEL sel, PID pid, PSEL pSelRecipient);
+APIRET APIENTRY DosGetSeg(SEL sel);
+APIRET APIENTRY DosFreeSeg(SEL sel);
+APIRET APIENTRY DosSizeSeg(SEL sel, PULONG pcbSize);
+/* fsAlloc: SEG_NONSHARED 0, SEG_GIVEABLE 1, SEG_GETTABLE 2, SEG_DISCARDABLE 4 */
+```
+
+`DosGetHugeShift` returned 3 on the measuring system, so the selector increment is 8
+[OBS-RE - measured]. **Sharing is per block, not per segment**, which IBM does not state
+[OBS-RE - measured on Warp Server for e-business 4.50, a 16-bit parent and child]:
+
+- **One `DosGetSeg` of the base selector attaches every segment:** the child could read both the
+  base segment and `base + increment` after a single get.
+- One `DosGiveSeg` of the base likewise gives the whole block; giving an interior selector
+  (`base + increment`) returns 5.
+- A child that has attached the block sees a later `DosReallocHuge` grow by the parent - both the
+  new size (via `DosSizeSeg`) and the new segment's contents - and an allocator sees a grow made
+  by a process that got the block.
+- `DosGetSeg` of a block allocated without `SEG_GETTABLE` returns **87** (not in IBM's list for
+  the call).
+- `DosFreeSeg` of an interior selector returns 5 and leaves the block intact; `DosFreeSeg` of the
+  base frees it, and a second `DosFreeSeg` returns 5.
 
 ## Aliasing
 
