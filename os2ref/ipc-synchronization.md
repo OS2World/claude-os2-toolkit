@@ -368,8 +368,36 @@ Return codes: `NO_ERROR`, `ERROR_INTERRUPT` (95), `ERROR_BROKEN_PIPE` (109), `ER
 A queue is a named, single-owner FIFO/LIFO/priority list of elements that many processes can
 write to and the owner reads from. Each element is a `(request-code, data-pointer, length)`
 triple tagged with the writing process's PID. Declared under `INCL_DOSQUEUES`. The handle type is
-`HQUEUE` (`typedef LHANDLE HQUEUE`). By convention the queue name begins `\QUEUES\`. **[DOC-IBM -
+`HQUEUE` (`typedef LHANDLE HQUEUE`). The queue name must begin `\QUEUES\`. **[DOC-IBM -
 `bsedos.h`; DOC - Control Program Reference]**
+
+> **CORRECTED (Rule 1.7):** this said the name begins `\QUEUES\` "by convention". It is a rule:
+> `DosCreateQueue` refuses a name without the prefix with 335 `ERROR_QUE_INVALID_NAME`.
+
+**Name rules, measured** [OBS-RE - measured on Warp Server for e-business 4.50, kernel revision
+14.089, by 32-bit probes calling `DosCreateQueue` / `DosOpenQueue`]:
+
+| Name | Result |
+|---|---|
+| `""`, `NOPREFIX`, or the bare prefix `\QUEUES\` | 335 |
+| `\queues\lower` (prefix in lower case) | 0 |
+| total length 9 (prefix plus one character) up to 259 | 0 |
+| total length 260 or more | 335 - the name *including its NUL* must fit 260 bytes (`CCHMAXPATH`) |
+| two 130-character names identical in their first 127 characters | 0 and 0 - two distinct queues; the whole name is significant |
+| create `\QUEUES\CANONCASE`, open `\queues\canoncase` | both 0 - one queue; names compare case-insensitively |
+| create `/QUEUES/SLASHCRE` | 0 - `/` is accepted |
+| create `\QUEUES\CANONSEP`, open `/QUEUES/CANONSEP` | both 0 - one queue; `/` and `\` are the same separator |
+
+**The NULL-name trap.** `DosCreateQueue(&hq, QUE_FIFO, NULL)` as a process's **first** call into the
+queue API ends the process silently: no further output, exit status 0, no SYS3175 pop-up and no
+`POPUPLOG.OS2` entry. Once the process has made any earlier `DosCreateQueue` call, whether it
+succeeded or was refused (335), the same NULL call returns 87 and the process carries on
+[OBS-RE - measured, three single-purpose probes, one process each]. **The tell:** a program or test
+that "just stops" at its first queue call with exit code 0. Never pass NULL; and in a test, put any
+case that can end the process last.
+
+**No small per-process limit.** One process created 60 queues and opened 4 more, then created a
+61st and opened a 5th: both returned 0 [OBS-RE - measured, a 16-bit probe].
 
 | Function | One-line purpose |
 |---|---|

@@ -60,8 +60,16 @@ which is the origin of the customary **64 KB** ceiling.
 Syntax rules:
 - `LIBPATH=`, `BEGINLIBPATH=`, `ENDLIBPATH=` set their value **with no `SET` prefix**; every other
   variable requires `SET NAME=value`. A bare `PATH=...` (without `SET`) is not a recognized directive.
-- Directive names and variable **names** are case-insensitive; variable **values** are
-  case-sensitive. A duplicate `SET` replaces the earlier value (last wins).
+- Directive names are case-insensitive; variable **values** are case-sensitive. A duplicate `SET`
+  replaces the earlier value (last wins).
+- **Looking a variable up is case-sensitive.** With `PATH` in the environment, `DosScanEnv("PATH")`
+  returns 0 and `DosScanEnv("path")` returns 203 `ERROR_ENVVAR_NOT_FOUND` [OBS-RE - measured on Warp
+  Server for e-business 4.50, kernel revision 14.089, 32-bit probe]. IBM's `DosScanEnv` page says
+  nothing about case [DOC-IBM `cp1.txt`, "DosScanEnv"]. *(CORRECTED, Rule 1.7: this line said
+  variable names are case-insensitive. Whether `SET` in CONFIG.SYS or CMD.EXE changes the case of
+  a name when it stores it is not established here; what is established is that the lookup matches
+  the stored spelling exactly.)* **The tell:** `getenv`-style code that finds a variable in one
+  program and not in another - compare the exact spelling in the environment block.
 - `PROTSHELL=` is a directive, not an env var; `SET PROTSHELL=...` is rejected.
 
 ## National Language Support [DOC-IBM `bsedos.h`]

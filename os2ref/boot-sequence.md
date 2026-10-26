@@ -139,8 +139,9 @@ the environment and NLS are set up **before** `DEVICE=`/`IFS=` drivers are insta
 this stage precedes Stages 6-7. See "Who runs Stages 6-10" below. It publishes:
 - **The environment** - a flat, double-null-terminated block (`"NAME=value\0...\0\0"`, <= 64 KB) at
   `PIB.pib_pchenv`, walked by `DosScanEnv`. `LIBPATH=` / `BEGINLIBPATH=` / `ENDLIBPATH=` set their
-  value with **no `SET` prefix**; every other variable requires `SET NAME=value`. Directive and
-  variable *names* are case-insensitive; *values* are case-sensitive.
+  value with **no `SET` prefix**; every other variable requires `SET NAME=value`. Directive names
+  are case-insensitive; *values* are case-sensitive; and `DosScanEnv` matches a variable's name
+  case-sensitively (corrected - see `config-and-environment.md`).
 - **NLS** - `DosQueryCp` (codepage), `DosQueryCtryInfo` (the `COUNTRYINFO` structure - date / time /
   currency / decimal formats), `DosQueryDBCSEnv`. ([DOC-IBM] `DosScanEnv` proto IBM Toolkit 4.5
   `bsedos.h:2616`; `struct _COUNTRYINFO` with `fsDateFmt`/`szCurrency[5]`/`szDecimal[2]`/
