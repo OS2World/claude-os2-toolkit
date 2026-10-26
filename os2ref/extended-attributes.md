@@ -309,6 +309,26 @@ buffer creates the directory with no EAs. The `DosProtectOpen`/`DosProtectOpenL`
 variants carry the same `PEAOP2`. Provenance: prototypes **[DOC-IBM]** `bsedos.h:1264-1338`;
 semantics **[DOC-IBM]** `cpgref.inf` "DosCreateDir", "DosOpen".
 
+**The 16-bit form** is `USHORT APIENTRY DosMkDir2(PSZ pszDirName, PEAOP peaop, ULONG ulReserved)`
+[DOC-IBM - the OS/2 1.x `bsedos.h`], taking the legacy `EAOP`/`FEALIST` (Section 2): a `FEALIST`
+is `cbList` followed by `FEA` headers (`fEA`, `cbName`, `cbValue` - 4 bytes) each immediately
+followed by the name, its NUL, and the value, with no alignment padding. Measured on Warp 4.50,
+live system [OBS]:
+
+- A supplied `EAOP` whose `fpFEAList` is NULL **traps the process** - SYS3175 `c0000005`,
+  `P1=00000000` - with the logged address the return address of the far call into `DosMkDir2`.
+  No return code is produced. (A NULL `peaop` creates the directory with no EAs, rc 0, as
+  documented.)
+- An EA name containing a metacharacter (`*`) is refused with `ERROR_INVALID_EA_NAME` (254), and
+  `oError` is the byte offset of the offending `FEA` **within the caller's own unpadded 16-bit
+  `FEALIST`**: 4 for a first entry (just past `cbList`); 25 for a second entry following a first
+  with a 7-byte name and 9-byte value (4 + 4 + 7 + 1 + 9). The 32-bit `DosCreateDir` answers the
+  same 254 with `oError` 4 for a bad first entry of a `FEA2LIST`. Nothing is created.
+- Values written at create time round-trip byte-exact into a level-3 `FIL_QUERYEASFROMLIST`
+  query: an `EAT_ASCII` value `05 00 "hello"` reads back as `FD FF 05 00 68 65 6C 6C 6F`
+  (`cbValue` 9), an `EAT_BINARY` value `03 00 01 02 00` as `FE FF 03 00 01 02 00` (`cbValue` 7),
+  and a two-entry list (`TESTEA1`/`TESTEA2`, `cbList` 46) stores both.
+
 ---
 
 ## 5. Enumerating EA names - `DosEnumAttribute` [DOC-IBM]
@@ -316,6 +336,9 @@ semantics **[DOC-IBM]** `cpgref.inf` "DosCreateDir", "DosOpen".
 `DosEnumAttribute` identifies the **names and value-lengths** of a file object's EAs without
 returning the values. It is the standard way to discover which EAs exist and to size the buffer for
 a subsequent level-3 get.
+A level-1 enumeration therefore cannot check an EA's **value**: the only read of the value bytes is
+a level-3 `FIL_QUERYEASFROMLIST` query (Section 4), so a `DENA1` that comes back with the right name
+and `cbValue` says nothing about whether the stored bytes are the ones written.
 
 ```c
 APIRET APIENTRY DosEnumAttribute(ULONG  ulRefType,   /* 0 = handle, 1 = path name */
@@ -375,20 +398,14 @@ name needs no such protection, since no sharing is possible). `DosProtectEnumAtt
 ## 6. Getting EAs through a directory search - `DosFindFirst` [DOC-IBM]
 
 `DosFindFirst`/`DosFindNext` can return EA information alongside each matched directory entry, via
-the `ulInfoLevel` argument (`bsedos.h:1536-1551`). The three levels IBM's books document reuse the
+the `ulInfoLevel` argument (`bsedos.h:1536-1551`). The levels below reuse the
 `FIL_STANDARD`/`FIL_QUERYEASIZE`/`FIL_QUERYEASFROMLIST` values from Section 4, but the buffer shape
 differs by level. Every level always includes level-1 information for each entry.
 
-> **CORRECTED (Rule 1.7):** this said *"The three EA-relevant levels"*. Those are the three the
-> books describe, not the whole space. IBM's headers define more find levels, and two families name
-> them differently: the 32-bit `bsedos.h` has `FIL_STANDARDL` 11, `FIL_QUERYEASIZEL` 12 and
-> `FIL_QUERYEASFROMLISTL` 13 [DOC-IBM `bsedos.h:745-747`], and the 16-bit header has
-> `FIL_QUERYALLEAS` 4, "return all EA's" [DOC-IBM DDK `base/h/bsedos16.h:509`]. Neither family
-> defines the other's values. Level 13 is level 3's large-file twin: the same `EAOP2` frame and
-> `FEA2LIST`, with the 64-bit `cbFile`/`cbFileAlloc` widening the header so the record starts with
-> `FILEFINDBUF4L` where level 3's starts with `FILEFINDBUF4` [OBS-RE - DOSCALL1 handles 3/4 and
-> 13/14 in shared code paths; measured on Warp Server for e-business 4.50, where an 8-character
-> name landed at `0x24 + cbList`].
+> **CORRECTED 2026-09-18.** This paragraph said *"The three EA-relevant levels"* and the table below
+> listed 1, 2 and 3. The find family's level gate admits **eight** values, and three of the five
+> missing ones carry EAs. Section 6.3 is the rest of the space; the table here is kept as the
+> documented core because it is the part IBM's books describe.
 
 | Level | Value | Result buffer format |
 |---|---|---|
@@ -411,6 +428,125 @@ same GEA list and the returned name can retrieve that entry's EAs). Provenance: 
 The idiomatic name search is a **two-pass** operation: call `DosFindFirst` at level 2 to obtain
 `cbList` (the EA size, hence the buffer to allocate), then call at level 3 to obtain the EA values.
 Provenance: **[DOC-IBM]** `cpgref.inf` "Searching for Extended Attributes".
+
+### 6.1 The level-3 record, byte for byte
+
+The 32-bit buffer is one `EAOP2` followed by chained records. The `EAOP2` appears **once**; the
+records repeat.
+
+| offset in record | field |
+|---|---|
+| `+0x00` | `ULONG oNextEntryOffset` - bytes to the next record's start; **0 in the last record** |
+| `+0x04` ... `+0x0F` | the six `FDATE`/`FTIME` words, as at level 1 |
+| `+0x10` | `ULONG cbFile` |
+| `+0x14` | `ULONG cbFileAlloc` |
+| `+0x18` | `ULONG attrFile` |
+| `+0x1C` | `ULONG cbList` - the `FEA2LIST` header, counting itself |
+| `+0x20` | the `FEA2` entries, stride `(cbName + cbValue + 12) & ~3`, last one `oNextEntryOffset = 0` |
+| `+0x1C + cbList` | `UCHAR cbName`, then the object's name and its NUL, the whole blob padded to `(cbName + 2 + 3) & ~3` |
+
+So `oNextEntryOffset = 0x1C + cbList + ((cbName + 2 + 3) & ~3)`, and the header through `cbList` is
+`FILEFINDBUF4`'s - level 3 is level 2 with the `FEA2LIST` spliced in where `cchName` would sit.
+Provenance: **[OBS-RE]** `DOSCALL1.DLL`'s `_FFNAlign`, the level-3/4 arm, which writes exactly these
+seven slots per record and allocates the name blob as `(cchName + 5) & ~3` bytes; **[OBS]** measured
+2026-09-18 on OS/2 4.50 Warp Server for e-business (Convenience Package), kernel internal revision
+14.089, over four records of three different name lengths in one buffer.
+
+**The `EAOP2` is not written back.** `fpGEA2List` comes back as the caller passed it and
+`fpFEA2List` and `oError` are left **untouched** - not zeroed. Measured the same day by pre-filling
+the buffer with `0xEE`: both fields still read `0xEEEEEEEE` after a successful call. IBM says the
+same thing in words rather than in zeroes - *"The EAOP2 data structure, with the fpFEA2List pointer
+incorrect"* **[DOC-IBM]** `cp1.txt` / `cpgref.txt`, "DosFindFirst Parameter - pfindbuf".
+
+### 6.2 Which return code, and where the boundary is
+
+Three outcomes, and the boundary between them is the **rounded** size of what would be written -
+there is no packed-size tolerance here, unlike the `DosQueryPathInfo` level-3 path:
+
+| the buffer holds | result |
+|---|---|
+| the whole level-3 record | `NO_ERROR` |
+| the level-2 (`FILEFINDBUF4`) record but not the EAs | **`ERROR_EAS_DIDNT_FIT`** (275), one entry's information in level-2 form with `cbList` = the whole on-disk EA size, and `*pcFileNames` set to **1** |
+| not even that | `ERROR_BUFFER_OVERFLOW` (111) |
+
+Measured 2026-09-18 on the machine above, sweeping `cbBuf` against a file whose one requested EA
+needs `cbList` = 36 and whose 11-character name needs a 16-byte blob: 111 through `cbBuf` = 59,
+275 from 60 (= `sizeof(EAOP2)` + the 48-byte level-2 record) through 91, and `NO_ERROR` from 92
+(= `sizeof(EAOP2)` + `0x1C` + 36 + 16). On the 275 path `*pcFileNames` was written as 1 over a
+requested 7; on the 111 path the requested count was left untouched. One capacity in that sweep,
+`cbBuf` = 52, answered 87 instead of 111 on that build, and no reading of the documentation or of
+the code accounts for it - recorded as an observation, not as a rule.
+
+Level acceptance for the find family is **1, 2, 3, 4, 11, 12, 13, 14**; every other level is
+`ERROR_INVALID_LEVEL` (124). Provenance: **[OBS-RE]** the compare chain in `DOSCALL1.DLL`'s
+`DOS32PFINDFIRST`, whose fall-through arm loads `0x7C`; **[OBS]** thirteen levels swept on the
+machine above, agreeing with it.
+
+**A requested EA that is absent** comes back as a well-formed `FEA2` carrying the requested name
+with `cbValue` = 0 - not an error and not an omission. Measured the same day.
+
+### 6.3 The rest of the level space - 4, 13 and 14
+
+**None of these three is documented in the CP books.** `cp1.txt` and `cpgref.txt` describe
+`DosFindFirst`'s `ulInfoLevel` as 1, 2 and 3, and neither contains the token `FIL_QUERYALLEAS`,
+`FIL_STANDARDL`, `FIL_QUERYEASIZEL` or `FIL_QUERYEASFROMLISTL` anywhere. `[DOC-IBM]`, by absence.
+
+**And IBM's two headers name them differently.** The 32-bit `bsedos.h` (Toolkit 4.5 and the DDK's
+base copy, identical text) defines `FIL_STANDARDL` 11, `FIL_QUERYEASIZEL` 12 and
+**`FIL_QUERYEASFROMLISTL` 13** - *"LFS - Level 13, return requested EA's"* - and does **not** define
+4. The 16-bit `bsedos16.h` defines **`FIL_QUERYALLEAS` 4** - *"Level 4, return all EA's"* - and
+defines none of 11-14. **No IBM header defines any `FIL_` constant with the value 14.**
+`[DOC-IBM]` `bsedos.h:742-751`, `bsedos16.h:506-509`.
+
+**Level 13 is level 3's large-file twin, and its record is level 3's with a wider header.** Same
+`EAOP2` frame, same `FEA2LIST`, same `(cchName + 5) & ~3` name blob after the EA list; what moves is
+everything between the date/time words and `cbList`:
+
+| offset in record | level 3 | level 13 |
+|---|---|---|
+| `+0x00` | `oNextEntryOffset` | `oNextEntryOffset` |
+| `+0x04`..`+0x0F` | six `FDATE`/`FTIME` words | six `FDATE`/`FTIME` words |
+| `+0x10` | `cbFile` (32-bit) | `cbFile` (**64-bit**) |
+| `+0x14` / `+0x18` | `cbFileAlloc` (32-bit) | `cbFileAlloc` (**64-bit**) |
+| `+0x18` / `+0x20` | `attrFile` | `attrFile` |
+| `+0x1C` / `+0x24` | `cbList` | `cbList` |
+| `+0x20` / `+0x28` | the `FEA2` entries | the `FEA2` entries |
+| `+0x1C`/`+0x24` + `cbList` | the name blob | the name blob |
+
+so `oNextEntryOffset` = `0x24 + cbList + ((cchName + 2 + 3) & ~3)` at level 13, and the header
+through `cbList` is `FILEFINDBUF4L` exactly as level 3's is `FILEFINDBUF4`. `[OBS-RE]` `DOSCALL1`'s
+16->32 re-expansion has **one** body for `case 3: case 4:` and **one** for `case 0xd: case 0xe:`,
+writing the record base as `local_20 - 8` dwords in the first and `- 10` dwords in the second, with
+`cbList` at `local_20[-1]` in both. `[OBS]` corroborated on real OS/2 Warp Server for e-business
+4.50 rev 14.089 (HPFS boot volume), 2026-09-18: an 8-character name landed at `rec+60` =
+`0x24 + cbList(24)`, records chained at `0x24 + cbList + pad`, and the high halves of `cbFile` and
+`cbFileAlloc` were 0 for a small file.
+
+Level 13's **return-code boundaries move with `cbList` exactly as Section 6.2's rule predicts** -
+`NO_ERROR` from `sizeof(EAOP2) + 0x24 + cbList + ((cchName + 2 + 3) & ~3)`, measured at 100 for
+`cbList` = 36 and 88 for `cbList` = 24 on the same 11-character name. Below that the same build
+answers **275 from `sizeof(EAOP2) + 0x24 + cbList`** - where the header and the EA list fit but the
+name does not, which is a *different* threshold from level 3's (level 3 begins returning 275 as soon
+as the level-2 substitute record fits, well below that point) - and **1 (`ERROR_INVALID_FUNCTION`)
+in a window whose lower edge was `cbBuf` = 56 at both EA-list sizes. Nothing read accounts for
+either the differing threshold or the 56.** `[OBS]`, recorded as observations and not as rules.
+
+**Levels 4 and 14 are admitted by the level gate and never produce a record.** `[OBS]` on the
+machine above, four objects whose whole EA sets are 4, 70, 248 and 19164 bytes, with a 32768-byte
+buffer: levels 3 and 13 returned `NO_ERROR` on all four, levels 4 and 14 returned 275 on all four.
+A file with **four** bytes of EAs - i.e. none - answers 275 into 32 KB, so 275 there is not an
+overflow; the caller's buffer comes back with the record's bytes overwriting the `EAOP2`'s
+`fpFEA2List` and `oError`, and priming `fpFEA2List` (left as fill, set NULL, or pointed at a real
+buffer) changes nothing. In a lower band of buffer sizes the answer is 1 instead - level 14 answered
+1 at every size from 44 to 4096 - and a **malformed `GEA2` chain at level 4 answers 11**, so the
+list is parsed even at a level whose name says it is ignored. **`DosQueryPathInfo` at level 4 works
+normally on the same volume and the same files** (a file with no EAs -> `NO_ERROR` with `cbList` = 4;
+the 19164-byte file -> `ERROR_BUFFER_OVERFLOW` against an 8 KB buffer), so `FIL_QUERYALLEAS` is a
+real, working info level and it is the **find entry point** that cannot deliver it.
+
+What produces the refusal is **not established**: the 32-bit wrapper's own level gate admits
+3/4/0xd/0xe alike, so whatever declines it lies below the 32->16 thunk, in the kernel's 16-bit find
+continuation or in the file system driver. Neither was read.
 
 ---
 

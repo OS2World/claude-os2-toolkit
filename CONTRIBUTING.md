@@ -71,6 +71,9 @@ about your process and misleading about what shipped. Prefer *"names and values 
 |---|---|---|
 | `[DOC-IBM]` | IBM's word: a Toolkit/DDK header, an IBM book, a redbook | `bsedos.h:2616`, `pm2.txt "WinLoadString - Syntax"` |
 | `[OBS-RE]` | Observed by reverse-engineering a binary or a debugger session | what you ran, on what |
+| `[OBS]` | Measured: a program run on real OS/2 and its result recorded | the system, build and probe |
+| `[OBS-USER]` | Remembered firsthand behaviour of real OS/2, no capture kept | who saw it, and that nothing was recorded |
+| `[INF]` | A conclusion reasoned from sourced facts - neither observed nor documented | the facts it rests on |
 | `[DOC]` | Community/secondary: EDM2, osFree, period references | the page or project |
 | `[SRC]` | Read from the source of a component that runs *on* OS/2 but is not OS/2 | repo-relative `path:line` |
 | `[unverified]` | You could not source it - say so instead of asserting it | - |

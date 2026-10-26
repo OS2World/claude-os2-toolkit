@@ -36,7 +36,7 @@ are returned through caller-supplied out-pointers and are only valid when the fu
 `ERROR_USER_DEFINED_BASE` is defined as `0xFF00` (65280): codes at or above this base are
 reserved for application-defined use and are never assigned by the system. [DOC-IBM: `bseerr.h`]
 
-### Two things the convention does not promise [OBS-RE - measured on Warp Server for e-business 4.50]
+### Two things the convention does not promise [OBS - measured on Warp Server for e-business 4.50]
 
 **A bad pointer is not reliably answered with 87.** Many calls do not check pointer arguments,
 and a NULL or wild pointer ends the process with an exception instead of returning a code. Measured
@@ -328,7 +328,7 @@ program exceptions, at process scope. The flags (from `bsedos.h`):
 | `FERR_ENABLEEXCEPTION` | `0x00000000L` | enable exception pop-ups |
 | `FERR_DISABLEEXCEPTION` | `0x00000002L` | disable exception pop-ups |
 
-**`AUTOFAIL=YES` overrides `DosError`** [OBS-RE - measured on Warp Server for e-business 4.50,
+**`AUTOFAIL=YES` overrides `DosError`** [OBS - measured on Warp Server for e-business 4.50,
 kernel revision 14.089, booted with and without `AUTOFAIL=YES` in CONFIG.SYS; the process's
 setting was read back through `DosSysCtl` function 27, an undocumented interface]. With
 `AUTOFAIL=YES` every process starts with the value 2 (hard-error pop-ups off, exception pop-ups
@@ -338,7 +338,7 @@ the pop-ups back on. Without the line, a process starts at 1 and `DosError` sets
 `DosError(FERR_ENABLEHARDERR)` still gets no "drive not ready" pop-up on a machine whose CONFIG.SYS
 has `AUTOFAIL=YES`.
 
-`DosErrClass` with a NULL class pointer returns 87 (no trap) [OBS-RE - same system].
+`DosErrClass` with a NULL class pointer returns 87 (no trap) [OBS - same system].
 
 ---
 
@@ -389,6 +389,127 @@ stored message; `msgnumber` selects the message; `pszFile` names the `.MSG` file
 the formatted result is written to `pBuf` and its length returned in `pcbMsg`.
 (In C++ compilation `pszFile` is typed `PCSZ`; otherwise `PSZ`.)
 
+#### Where the message file is looked for [DOC-IBM] + [OBS-RE]
+
+The message is sought **in the bound message segment first, then on disk**; the
+Control Program Reference is explicit that "the presence of the message in
+memory (EXE bound) or on DASD is not apparent to the caller."
+
+The CP Reference gives the search order as follows, **conditioned on the name
+not being fully qualified** - a condition the shipped implementation does not
+actually honour; see "The conditional is not honoured" below:
+
+1. the system root directory
+2. the current working directory
+3. directories listed in the **`DPATH`** (protect-mode) statement
+4. directories listed in the `APPEND` (DOS session) statement
+
+`DOSCALL1.DLL`'s own code agrees, and shows the mechanism: its `OPEN_DPATH`
+allocates a 260-byte buffer and calls
+
+```c
+DosSearchPath(7, "DPATH", pszFilename, buf, 0x104);   /* then DosOpen */
+```
+
+with `fsSearch` 7 = `SEARCH_CUR_DIRECTORY | SEARCH_ENVIRONMENT |
+SEARCH_IGNORENETERRS` - i.e. the documented order is delivered by an ordinary
+`DosSearchPath` over `DPATH`, not by bespoke logic. [OBS-RE]
+
+**The lookup is case-insensitive**, because the filesystems are: the same
+message, requested as `OSO001.MSG`, `OsO001.msg` and `oso001.msg` through a
+fully-qualified path, returns byte-identical text and `rc=0`. A bare
+mixed-case name resolves the same way once `DPATH` names the directory, and
+the directory need not be `\OS2\SYSTEM` - a bare `JfSh.msg` resolves to
+`C:\OS2\JFSH.MSG` through the `C:\OS2` entry. [OBS, Warp 4.50]
+
+#### The conditional is not honoured - the search happens anyway [OBS]
+
+The prose above conditions the whole search on the name not being fully
+qualified, and the same book defines that term twice, in this exact
+else-search-a-path-list context - `DosExecPgm` and `DosStartSession`, in
+identical words: *"a fully qualified file specification (that is, it contains
+a `:` in the second position, or it contains a `\`, or both)"*. Read together
+those say a qualified name must never be searched for.
+
+**Measured on Warp 4.50, it is searched for anyway.** `DosGetMessage` for
+message 1210 from `C:\ZZDIR457\OSO001.MSG` - a name that is qualified by
+IBM's own definition, whose directory does not exist on that machine (checked)
+- returns `rc=0` and the full `SYS1210` text. The name is reduced to its
+basename and `DPATH` is searched.
+
+Two confounds were eliminated before believing that, because each implies a
+different implementation and all three predict the same result:
+
+- **Not the open-file cache.** `DOSCALL1` caches opened message files
+  (`SAVED`/`SAVED_COUNT`), so a name comparison that ignored the directory
+  would answer identically. Issuing the same request as the process's
+  **first** message call - cache provably empty - still returns `rc=0`.
+- **Not a fall back to the default system message file.** `DOSCALL1` really
+  does carry `\SYSOSO001.MSG` for default-message purposes, and message 1210
+  is in it, so that mechanism also predicts the observed bytes. Requesting
+  **JFS message 1** through `C:\ZZDIR457\JfSh.msg` - a message present in no
+  other message file - returns the JFS text, byte-identical to a direct bare
+  `JfSh.msg` lookup. The search is per-file and finds the file the caller
+  named.
+
+So for **behaviour**, the rule is: try the name as given; on failure, reduce to
+the basename and search `DPATH`, qualified or not. The documented conditional
+describes intent the binary does not implement, and Rule 1.2 applies -
+the implementation wins for behaviour.
+
+**Not established:** whether the qualified path is tried first and the basename
+second, or the basename is all that is ever used. Every measured qualified name
+either exists (opened directly) or has a missing directory, so no case
+distinguishes the order. Settling it needs a fixture where both the qualified
+path and a `DPATH` copy exist with different contents.
+
+#### What happens when the file is not found [DOC-IBM] + [OBS]
+
+The CP Reference states that on "a DASD error or a file-not-found condition,
+the system places an error message into the user's buffer area", listing
+"unable to find the system message file" as one of the three cases. That
+message is **message 318 of the system message file**, whose record reads
+
+```
+'E' "Message file %2 cannot be found for message %1.\r\n"
+```
+
+so `%1` is the message number and `%2` the file name, and the `E` type byte
+produces the usual `SYSnnnn: ` prefix. Measured on Warp 4.50:
+
+| requested | returned |
+|---|---|
+| msg 1210, `C:\OS2\SYSTEM\ZZNOENT.MSG` | `rc=2`, `cb=84`, `SYS0318: Message file C:\OS2\SYSTEM\ZZNOENT.MSG cannot be found for message  1210.` |
+| msg 7, same file | `... for message  0007.` |
+| msg 12345, same file | `... for message 12345.` |
+| msg 1210, bare `OsO001.msg`, no `DPATH` | `... Message file OSO001.MSG cannot be found ...` |
+
+Three properties, each pinned by varying exactly one thing:
+
+- **The return code is `2 ERROR_FILE_NOT_FOUND`**, not one of the `ERROR_MR_*`
+  codes - and `2` is listed in the CP Reference's own return table for
+  `DosGetMessage` alongside them.
+- **`%1` is formatted `%5.4u`** - a five-character field with a four-digit
+  minimum. One sample cannot distinguish that from several other formats;
+  `7 -> " 0007"` and `12345 -> "12345"` together can. Behaviour above five
+  digits is not measured.
+- **`%2` is the file name UPPERCASED**, and a bare name stays bare - OS/2 does
+  not decorate it with the directory it failed to find it in.
+
+#### `ERROR_MR_*` - the message-retrieval codes [DOC-IBM]
+
+| value | constant | raised when |
+|---|---|---|
+| 316 | `ERROR_MR_MSG_TOO_LONG` | the formatted result overflows the caller's buffer |
+| 317 | `ERROR_MR_MID_NOT_FOUND` | the message number is outside `[firstmsg, firstmsg+numbermsg)` |
+| 318 | `ERROR_MR_UN_ACC_MSGF` | a short or failed read of the message file |
+| 319 | `ERROR_MR_INV_MSGF_FORMAT` | signature mismatch, or more than 16 code pages |
+| 320 | `ERROR_MR_INV_IVCOUNT` | more than nine insertion variables |
+| 321 | `ERROR_MR_UN_PERFORM` | an allocation failure inside the retrieval path |
+
+The numbering is worth stating flatly because the names invite transposition:
+`UN_ACC_MSGF` is **318** and `INV_MSGF_FORMAT` is **319**, in that order.
+
 ### `DosInsertMessage` [DOC-IBM]
 ```c
 APIRET APIENTRY DosInsertMessage(PCHAR* pTable,   /* in:  substitution strings */
@@ -402,7 +523,7 @@ APIRET APIENTRY DosInsertMessage(PCHAR* pTable,   /* in:  substitution strings *
 Same variable substitution as `DosGetMessage`, but on a message string already held in memory
 rather than read from a file. (In C++ compilation `pszMsg` is typed `PCSZ`.)
 
-Measured [OBS-RE - Warp Server for e-business 4.50, kernel revision 14.089, 32-bit probe]:
+Measured [OBS - Warp Server for e-business 4.50, kernel revision 14.089, 32-bit probe]:
 
 | Message, inserts | Result |
 |---|---|
@@ -432,7 +553,7 @@ Reports the code pages and languages a message file contains, so a caller can se
 one. (In C++ compilation `pszFilename` is typed `PCSZ`.)
 
 Measured through the entry point the Toolkit's stub calls (`DosIQueryMessageCp`, with an empty
-message segment) [OBS-RE - Warp Server for e-business 4.50]: the full path of `OSO001.MSG` returns 0
+message segment) [OBS - Warp Server for e-business 4.50]: the full path of `OSO001.MSG` returns 0
 and 10 bytes; a **bare file name returns 2** when the session has no `DPATH` (a detached ssh session
 had none) - the file is looked up along `DPATH`, not the current directory; a missing file returns
 2; a 3-byte buffer returns 111 with those 3 bytes written.
@@ -447,6 +568,15 @@ had none) - the file is looked up along `DPATH`, not the current directory; a mi
   `DosGetMessage`, `DosInsertMessage` (`DosInsMessage`), `DosPutMessage`, `DosQueryMessageCP`, and
   the `FERR_*` flags.
 - `os2def.h` - the `APIRET` / `APIRET16` / `APIRET32` typedefs.
+- `cpgref.txt` (Control Program Guide and Reference) - `DosGetMessage`'s
+  return-value table, its search order, and its documented behaviour on a
+  file-not-found condition.
+- unpublished notes - `DO_OPEN` /
+  `OPEN_DPATH`, the `.MSG` header and index layout, and an independent
+  derivation of the `ERROR_MR_*` values from IBM's own raising sites.
+- Measured on `a Warp Server for e-business system` (Warp 4.50), 2026-08-30, by a 32-bit
+  `DosGetMessage` probe, cases G8-G15 - the case-insensitivity,
+  the not-found text and its two formatting rules.
 
 ## See also
 - `calling-convention.md` - the `APIRET` return convention these codes travel in. Individual `Dos*`/`Win*` docs list the codes each call returns.

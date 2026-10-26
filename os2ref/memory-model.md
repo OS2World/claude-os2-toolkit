@@ -61,7 +61,7 @@ kernel - not stated in IBM sources).
 > OS/2 Warp Server SMP addendum section 042-045. Also *Inside OS/2 Warp Server for e-business*,
 > SG24-5393 (not held locally).]
 
-### Shared-arena sub-regions [OBS-RE]
+### Shared-arena sub-regions [DOC-IBM]
 Version-specific (Warp 4 / V3 FP19) region hints, not a hard ABI: R/W-basing at 0x14000000,
 global-shared (read-only) 0x18000000-0x1C000000, 16-bit packed code at 0x19000000, pre-based DLLs at
 0x1A000000; the shared arena tops out at 0x1FFF0000 (512 MB - 64 KB).
@@ -98,6 +98,113 @@ storage to commit"* (`memory-api.md` section "Error codes" `[DOC-IBM bseerr.h]`)
 does not distinguish them. An allocation that fails in the low hundreds of MB on a machine with RAM
 to spare has hit an arena or tiling boundary (`OBJ_TILE` confines an allocation to the first 512 MB),
 not a storage shortage; compare `QSV_MAXPRMEM` / `MAXSHMEM` against `QSV_TOTAVAILMEM` to tell which.
+
+**Two different strengths of support, and the difference is load-bearing.**
+
+*Verifiable in IBM prose today* [DOC-IBM - *OS/2 Debugging Handbook* Vol. I,
+Ch. 13, "the shared arena is further subdivided into a number of regions"]: the
+arena *"starts **initially** at the 304MB boundary and ends at 512MB"* - IBM's
+own "initially" is doing work, see the MEMMAN note below; **Protected** is
+reachable only by DLLs "assigned data selector 63"; **Based** is "reserved for
+non-protected DLLs that have a preferential base address assigned by the linkage
+editor by using the BASE option"; **Packed** is "reserved for 16-bit DLL code
+segments", packed contiguously, and inside it "the compatibility region mapping
+algorithm does not apply" - so a 16->32 address conversion there requires
+scanning the LDT.
+
+*IBM's own worked-example dump output* [DOC-IBM - same handbook, six `.vmda`
+arena dumps: Vol. I lines 8899, 14041, 14097 and Vol. II lines 13830, 13850,
+13996]: every one carries the identical record `%04000000 007 ... max=%1fff0000`,
+across three separate dump sessions in two volumes. **This is where the corpus's
+`0x1FFF0000` comes from, and it is held in this tree** - IBM's *prose* says
+"512 MB" (`0x20000000`), and only the dumps supply the 64 KB. Re-verified the
+way a binary read is, by reading the dump again, not by re-running anything.
+`[INF]` on one point, stated rather than assumed: that record's `va` is
+`%04000000` = **64 MB**, *below* the 304 MB arena bottom, so `max=` plausibly
+bounds the whole user address space rather than the shared arena specifically.
+Either reading puts the top of user-addressable arena space at `0x1FFF0000`,
+which is what the line above claims; which of the two `max=` means is not
+established here.
+
+*Inference, not IBM's word* `[INF]`: that **Protected** *begins* at **448 MB**
+(`0x1C000000`). IBM's only use of that boundary - its single occurrence in all
+held IBM text, Vol. I Ch. 13 - is a statement about **application
+addressability**: *"In General 16- and 32-bit applications do not have
+addressability above the 448MB boundary."* Read beside the selector-63 sentence
+that is verbatim above, a protected region starting there is a good inference and
+nothing more; the start address is implied, never stated.
+
+*Resting on a figure not held in the source set used here*: the three interior addresses
+**0x14000000, 0x19000000 and 0x1A000000**. Their source is *Figure 10, "Virtual
+Address Space Regions"* (same handbook, section 3.4.1.1) - an **image, not present in
+the text extraction held here**, so the citation cannot be followed in this tree
+(the same caveat the SMP-addendum citation above states as *"not held
+locally"*). None of the three literals occurs in any held IBM text. Treat them
+as IBM's, unre-readable here, until the figure is obtained.
+
+**Why the boundaries are soft, from IBM rather than from us** [DOC-IBM, same
+chapter]: `MEMMAN=NOPROTECT` subsumes the protected region into the based one
+and, under OS/2 2.x, moves **based and packed up by 64 MB**; `MEMMAN=NOPACK`
+disables packing. So the region *positions* are a CONFIG.SYS-dependent runtime
+layout, which is what "not a hard ABI" means and why the observation below finds
+the same shape at different addresses. That characterisation is no longer ours
+by inference.
+
+**One unresolved oddity, inherited not introduced**: as transcribed, packed
+(0x19000000) and based (0x1A000000) fall *inside* the stated global-shared range
+0x18000000-0x1C000000. Consistent with the MEMMAN note - a fixed table cannot
+describe a movable layout - but which reading Figure 10 intends is exactly what
+the unheld figure would settle.
+
+> **Provenance corrected 2026-08-31 (Rule 1.7), third pass.** The claim below
+> was tagged `[OBS-RE]` and is now `[OBS]`. **No claim changed.** It is the same
+> method as `executable-formats.md`'s placement observations - a ring-3 probe on
+> real OS/2 comparing live object addresses against the on-disk object table -
+> and `[OBS-RE]` names RE of a binary or the kernel debugger, neither of which
+> was used.
+>
+> ~~The section heading above keeps `[OBS-RE]`, which is correct for the
+> version-specific region hints it introduces.~~ **THAT SENTENCE WAS FALSE, and
+> the heading is now `[DOC-IBM]` (Rule 1.7, same day).** The region figures are
+> not reverse-engineered at all: they are an IBM-published memory map, cited
+> above. The sentence adjudicated a tag by asserting it rather than by checking
+> the source, in a note whose whole subject was tag provenance. **And the first
+> attempt to fix it repeated the shape one level up** (Rule 1.7, same day): it
+> cited the handbook without checking the cited text is readable here, and
+> offered a second project doc as independent corroboration when that doc says
+> in its own heading that it is folded from the same archive file. Two copies of
+> one source are not two sources - and an
+> automated sweep flagged this heading on three consecutive passes, each of
+> which read that sentence and moved on. **A disposition recorded without a
+> source is what makes a candidate stop being examined**, which is worse than
+> leaving it undispositioned.
+
+**A second, independent observation - Warp 4.50 (Server for e-business).** `[OBS]`
+Sampling where the loader actually placed **relocated DLL objects** (comparing every loaded
+module's live object addresses against the object table in the file on disk) shows the same
+*shape* as the hints above - writable low, read-only high - at different addresses, which is
+what "version-specific, not a hard ABI" predicts:
+
+| landing band | object permission | count |
+|---|---|---|
+| `0x17______` | writable | 17 (0 executable) |
+| `0x1E______` | executable or read-only | 12 EXEC + 5 RO (0 writable) |
+
+Two things generalise beyond the specific addresses:
+
+- **The split is by writability, not by the LX `SHARED` object flag.** That hypothesis was
+  tested and refuted - objects both with and without the flag appear in both bands, while the
+  read/write permission separates them cleanly.
+- **A relocated DLL object stays inside the shared arena.** Objects whose preferred base was
+  unavailable - or which had none - were re-placed elsewhere *within* 0x13000000-0x20000000,
+  never into the private arena. Both bands sit below the 512 MB line and are therefore
+  tileable, so 16-bit code can still address a relocated object through a 16:16 alias.
+
+**Allocation direction, measured.** Four successive loads of the same module descended in 64 KB
+steps - `0x1E160000` -> `0x1E140000` -> `0x1E120000` -> `0x1E100000` - corroborating the "grows
+down" note in the table above from live behaviour rather than documentation. (An *ascending*
+sequence of addresses observed across a boot is load order over a downward-growing arena, not an
+upward allocator.)
 
 ## Selectors - GDT for the system, LDT for applications [DOC-IBM / OBS-RE]
 

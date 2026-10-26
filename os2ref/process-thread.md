@@ -100,6 +100,18 @@ TIDs are numbered per-process starting at 1 (the initial thread). PIDs are syste
 | 0x0C | `tib2_usMCCount` | `USHORT` | must-complete nesting count |
 | 0x0E | `tib2_fMCForceFlag` | `USHORT` | must-complete force flag |
 
+**`tib_ordinal` is not the thread ID, although its name suggests it is.** IBM's reference
+text gives it only as "thread ordinal number" [DOC-IBM]. The kernel's `_tkSetTIB`, which
+fills the TIB on the thread's first return to ring 3, writes `tib2_ultid` from the word at
+TCB+0 and `tib_ordinal` from the word at TCB+2 [OBS-RE - `os2krnl` debug kernel,
+`_tkSetTIB` instructions `movzx ecx,word [ecx]` and `mov dx,[ecx+0x2]`; the SMP 14.104a
+decompile of the same function agrees]. The Debugging Handbook names those two TCB cells:
+TCB+0 is `TCBOrdinal`, "the unique thread id assigned to the thread within the process", and
+TCB+2 is `TCBNumber`, the thread's system-wide slot [DOC-IBM - Debugging Handbook vol. 2].
+So the names cross over. The TIB field called `tib_ordinal` holds the **slot number**, which
+is system-wide, and the per-process thread ID (1 for the main thread) is found only in
+`tib2_ultid`. Code that wants "which thread of this process am I" must read `tib2_ultid`.
+
 The base of the TIB is what the FS segment register addresses in a running thread:
 `FS:[0]` is `tib_pexchain`, the head of the exception-handler chain. [OBS-RE - the FS-relative
 TIB layout is observed of the running kernel; the field list itself is [DOC-IBM].]
@@ -123,6 +135,21 @@ by the argument string (ASCIIZ), the pair terminated by a second null. **`pib_pc
 to the environment block: a sequence of `NAME=value` ASCIIZ strings terminated by an extra null
 byte.
 
+**The environment segment a new process receives** [DOC-IBM - *Control Program Reference*,
+`DosExecPgm`, parameter `pEnv`; the 16-bit *Programming Reference* `DosExecPgm` page gives the
+same figure]: `eo:` the environment strings, then a byte of zeros; `po:` the fully qualified file
+specification of the executable (IBM: "this name is copied into \"po\"", parameter `pName`);
+`ao:` argument string 1 and argument string 2 (by the `CMD.EXE` convention, the program name as
+entered and then its parameters), then a byte of zeros. `ao` is the command-line offset: a
+16-bit program receives it in `BX` and from `DosGetEnv`; a 32-bit program on the stack at
+`SS:[ESP+16]`. So the string immediately before `ao` is the program's fully qualified name.
+[DOC] One C runtime relies on that, read in its published source: OpenWatcom's 16-bit
+executable startup (`startup/os2/maino16.c`, `_OS2Main`, the arm built when the target is not a
+DLL) takes its program name by backing up from `ao` to the previous null, citing "OS/2 2.0
+docs", and its 32-bit DLL startup (`startup/386/dmaino32.c`, `__LibMain`, the arm for a DLL that
+is not the runtime DLL) does the same from `pib_pchcmd`. Its 32-bit executable startup was not
+found to read the program name this way.
+
 **`pib_ultype` - process type codes** [DOC-IBM - bsedos.h]:
 
 | Value | Constant | Meaning |
@@ -138,6 +165,81 @@ byte.
 | Value | Constant | Meaning |
 |---|---|---|
 | 1 | `PS_EXITLIST` | the thread is currently running in an exit-list routine |
+
+---
+
+## Process identifiers - width, allocation and reuse
+
+A **PID is sixteen bits**, range `1..65535`. This is not a convention or an
+implementation detail of one build; it is how the kernel is constructed, and the
+32-bit API is a zero-extended *view* of it.
+
+**NEGATIVE RESULT [DOC-IBM].** No IBM document states a PID range, width or
+reuse behaviour. Searched: the *OS/2 Debugging Handbook* volumes I, II and IV,
+the Control Program Guide and Reference, the Toolkit 4.5 headers, the DDK, and
+the Developer Connection toolkits. The Control Program Reference does not
+document `QSV_MAXPROCESSES` at all, and its `DosWaitChild` return-code list
+(0/13/128/129/184/303) **omits 87**, which the shipped binary demonstrably
+returns. The facts below therefore rest on reverse engineering and on live
+measurement, and the binary wins where the two disagree. Do not go looking for a
+document; it is not there.
+
+### Width [OBS-RE]
+
+| Evidence | What it shows |
+|---|---|
+| `_tkNewPid` (`os2krnl` obj17 `0x001A0514`) | increments a **WORD** counter (`inc ax`) |
+| `PTDA+0x72a` (PPID `+0x72c`) | the PID is stored as a **WORD**. A whole-image scan of every 32-bit kernel object finds ~120 accesses to that offset and **every one is `movzx r32,word` or `mov r16` - zero dword loads**. Identical in all four kernel builds (smp/uni x base/debug); only the global's address moves, so this is a property of the family, not of one binary |
+| `DOSCALL1!DOS32EXECPGM` | allocates a **16-bit** `RESULTCODES` on its own stack, calls the 16-bit worker, then widens with `lodsw / movzx / stosd` into the caller's 32-bit struct. IBM's own 32-bit `DosExecPgm` therefore **cannot** return a `codeTerminate` above `0xFFFF` |
+| `_tkSetPIB` | `xor edx,edx / mov dx,[ecx+0x72a]` - `PIB.pib_ulpid`'s top 16 bits are always zero |
+| `CWait` | truncates its argument on entry (`movzx ecx,cx`), compares 16-bit throughout, and packs the PID into the low half of its block token under an `0xffc2` tag - the wait-token encoding structurally requires a 16-bit PID |
+
+The header split says the same thing: `typedef USHORT PID`
+(`os21x/os2def.h:122`) against `typedef LHANDLE PID` (`os2def.h:233,76`), and
+`RESULTCODES` as `{USHORT,USHORT}` (`os21x/bsedos.h:80`) against `{ULONG,ULONG}`
+(`bsedos.h:181`).
+
+### Out-of-range is rejected, not truncated [OBS - measured, Warp 4.50]
+
+`DosWaitChild(DCWA_PROCESS, DCWW_NOWAIT, ...)`:
+
+| PID passed | rc |
+|---|---|
+| a pid that fits but names no child | 128 `ERROR_WAIT_NO_CHILDREN` |
+| 65535 | 128 |
+| **65536** | **87 `ERROR_INVALID_PARAMETER`** |
+| 957507 | **87** |
+
+The boundary is exactly `0xFFFF`/`0x10000`, matching `DOS32WAITCHILD`'s own
+guard in the shipped `DOSCALL1` (`cmp eax,0xffff / ja -> mov eax,0x57`). Note
+that `957507 & 0xFFFF = 40003`, and the system does **not** answer as though
+that truncated value had been passed - so truncating an out-of-range pid is not
+an approximation of this behaviour, it is a different behaviour.
+
+### Allocation and reuse [OBS-RE + OBS + testimony]
+
+**The rule, stated plainly:** a pid is **always the next available number**,
+counting up; on overflow the counter wraps and again takes the next available
+number. Nothing is reserved and nothing is hashed - it is a counter with a
+skip-if-taken check. (Maintainer testimony 2026-08-19, from a decade of daily
+OS/2 use; independently matched by the disassembly below, which is why it is
+recorded here as the rule rather than as one observer's impression.)
+
+
+`_tkNewPid` increments a WORD counter and skips the wrap-to-zero. On its slow
+path it scans the task list **and the zombie-PTDA chain**, skipping any
+candidate already in use - so pids **wrap and are reused**, and a pid is not
+recycled while a terminated process's record can still be claimed.
+
+Measured live (Warp 4.50): 25 consecutive spawns produced `242, 248, ... 386` -
+monotone, +1 per creation. `QSV_MAXPROCESSES` returns **1025**, so the
+concurrency bound is far below the pid space and wrap is rare in practice.
+Observed values elsewhere: PID 1 for kernel threads, 2 for `PMSHELL`, and
+ordinary children in the low hundreds (159 measured).
+
+A full round trip, measured: `DosExecPgm(EXEC_ASYNCRESULT)` ->
+`codeTerminate=411` -> `DosWaitChild(411)` -> `rc=0, outpid=411`, with the child
+independently confirming its own pid as 411.
 
 ---
 
@@ -239,7 +341,7 @@ APIRET APIENTRY DosWaitChild(ULONG action,       /* DCWA_* : which children     
 specific child (0 = any child). Only children started with a result-retaining mode
 (`EXEC_ASYNCRESULT` / `EXEC_ASYNCRESULTDB`) can be waited on this way.
 
-**Measured return codes for process creation and waiting** [OBS-RE - measured on Warp Server for
+**Measured return codes for process creation and waiting** [OBS - measured on Warp Server for
 e-business 4.50, kernel revision 14.089, 32-bit probe; codes named from `bseerr.h`]:
 
 | Call and input | Result |
@@ -276,9 +378,37 @@ APIRET APIENTRY DosKillProcess(ULONG action, PID pid);
 | 0 | `DKP_PROCESSTREE` | terminate the process and its descendant tree |
 | 1 | `DKP_PROCESS` | terminate only the named process |
 
+What the target sees [DOC-IBM `cp1.txt` "DosKillProcess - Remarks", `cp2.txt` "Signal Exceptions"]:
+the KILLPROCESS exception (`XCPT_SIGNAL`, `ExceptionInfo[0]` = `XCPT_SIGNAL_KILLPROC`), sent **only to
+thread 1**, delivered **whether or not** the process called `DosSetSignalExceptionFocus`. A handler may
+intercept it; otherwise the process ends and its parent's `DosWaitChild` gets termination code 3.
+Measured [OBS: WSeB 4.50 revision 14.089, 2026-09-30; a parent starting a child `EXEC_ASYNCRESULT`,
+waiting 1.5 s while the child sleeps in `DosSleep(10000)`, then `DosKillProcess(DKP_PROCESS, pid)` and
+`DosWaitChild`]:
+- no handler: `DosKillProcess` 0; `DosWaitChild` 0, `codeTerminate` 3, `codeResult` 0;
+- thread 1's handler answers `XCPT_CONTINUE_EXECUTION` to `XCPT_SIGNAL_KILLPROC`: **the child's
+  `DosSleep` returns 322 `ERROR_TS_WAKEUP`** and the child runs on to its own `DosExit` -
+  `codeTerminate` 0 and the child's own result.
+
 ---
 
 ## Thread creation and control
+
+### System-wide thread limit - CONFIG.SYS `THREADS=` [DOC-IBM - OS/2 online help for the CONFIG.SYS `THREADS` statement]
+
+The system supports a maximum of **4095 threads**, allocated across the kernel itself and every
+application running on it - a **system-wide** pool, not a per-process limit. The `THREADS=`
+statement in CONFIG.SYS sets the pool size; with no `THREADS` statement, the default is **64**.
+IBM's own guidance: reducing the count while running complex applications or system extensions
+can force activities that could run concurrently to run serially, slowing performance.
+
+A process that exhausts the pool sees `DosCreateThread` fail with `ERROR_MAX_THRDS_REACHED`
+(164) - see the error-code table below.
+
+*Attribution: quoted verbatim from the OS/2 online help for the CONFIG.SYS `THREADS` statement
+by the author, 2026-08-13 (the containing .INF is not in this tree - checked, zero in-tree
+hits for "4095 threads" before this entry). The "default is 64" figure was author-corrected
+from a truncated paste that read "6".*
 
 ### `DosCreateThread` [DOC-IBM - bsedos.h]
 
@@ -295,6 +425,8 @@ APIRET APIENTRY DosCreateThread(PTID  ptid,       /* new thread's TID (out)     
 
 The new thread begins at `pfn`, receiving `param` as its single argument. `*ptid` receives the
 new thread's ID. `cbStack` is the stack size to allocate (rounded up as the system requires).
+A `cbStack` of **0** is refused with **87** `ERROR_INVALID_PARAMETER`; 1 succeeds (`[OBS]`, measured
+on WSeB 4.50 revision 14.089 SMP; `[OBS-RE]` the kernel's 32-bit `DosCreateThread` entry checks it).
 
 **`flag` bits** [DOC-IBM - bsedos.h]:
 
@@ -305,7 +437,7 @@ new thread's ID. `cbStack` is the stack size to allocate (rounded up as the syst
 | 0 | `STACK_SPARSE` | reserve stack, commit pages on demand |
 | 2 | `STACK_COMMITTED` | commit the whole stack up front |
 
-**Measured behaviour** [OBS-RE - measured on Warp Server for e-business 4.50, kernel revision
+**Measured behaviour** [OBS - measured on Warp Server for e-business 4.50, kernel revision
 14.089, retail SMP, 32-bit probe; three concurrent copies agreed]:
 
 - **TIDs are reused lowest-first.** With threads 2 and 3 alive and 4 ended, the next thread
@@ -322,7 +454,7 @@ new thread's ID. `cbStack` is the stack size to allocate (rounded up as the syst
   whichever thread ended, `DCWW_NOWAIT` on a live thread returns 294 `ERROR_THREAD_NOT_TERMINATED`,
   and a TID never created returns 309 `ERROR_INVALID_THREADID`.
 
-`DosVerifyPidTid(pid, tid)`, measured [OBS-RE - same system]: the caller's own pid with TID 1
+`DosVerifyPidTid(pid, tid)`, measured [OBS - same system]: the caller's own pid with TID 1
 returns 0, with TID 99 or TID 0 returns 309 `ERROR_INVALID_THREADID`; pid 0 and pid 0xFFFF return
 303 `ERROR_INVALID_PROCID`; a live child's TID 1 returns 0 and its unused TID 2 returns 309; a child
 that has ended returns 303.
@@ -386,6 +518,68 @@ thread (input `*ptid` = 1); either returns `ERROR_INVALID_THREADID`. Under `DCWW
 thread yet ended, `*ptid` is left unchanged. A common use is to reclaim an ended thread's
 resources (e.g. its stack).
 
+> **Provenance corrected 2026-08-31 (Rule 1.7).** 3 claims in this document
+> were tagged `[OBS-RE]` and are now `[OBS]`. **No claim changed** - only the
+> label for how it was established. `[OBS-RE]` means *read out of a binary or the
+> kernel debugger*, an interpretation; `[OBS]` means *a capture from a running
+> system*, no interpretation. Each of these was a probe run on real OS/2 whose
+> return codes were recorded, so `[OBS]` is the tag, and the re-verification is
+> "run the probe again" rather than "read the bytes again". The two had drifted
+> because `[OBS]` was in use throughout the corpus with **no definition at all**
+> until that date; see `README.md`, *Provenance*.
+
+**A terminated thread's TID stops being waitable if nothing was already blocked in
+`DosWaitThread` for it - `[OBS]`, measured 2026-08-18, real OS/2 (WSEB Warp, `a Warp Server for e-business system`),
+not documented in any IBM source found so far.** Create N short-lived threads, let them all
+genuinely finish (confirmed via each thread's own completion flag, plus a real elapsed delay),
+*then* call `DosWaitThread` for each by its recorded TID: every call returns
+`ERROR_INVALID_THREADID` (309), even though the thread ran to completion and its TID was never
+reused for anything else. The **`*ptid = 0`** ("wait for any next thread") form fails identically
+once every thread has already terminated with nothing having been blocked waiting - it is not
+specific-TID-vs-any that matters. This does **not** contradict the EDM2 "reclaim an ended thread's
+resources" framing above - it sharpens it: unlike a POSIX `pthread_join`, which can reap a thread
+at any point after it exits (the exited thread persists in a joinable/zombie state until then), OS/2
+does not appear to retain that state past termination unless a `DosWaitThread` call is already
+outstanding for it (specific TID) or for "any" thread. A caller that creates a batch of threads and
+plans to reap them all in a later, separate loop - a completely ordinary pattern under POSIX
+threading - will lose the race for any thread that finishes before its turn in that loop comes up.
+The safe pattern is to synchronize on each thread's own completion (an event semaphore, or a
+polled flag the thread sets before returning) and treat `DosWaitThread` as best-effort resource
+reclamation afterward, not as the actual completion signal. Found via a
+concurrent `DosOpen` stress probe's thread-join helper, whose own comment
+project-side has the reproduction.
+
+**Two `DosWaitThread` calls outstanding for the SAME terminating thread - one
+wait-specific, one wait-for-any (`*ptid = 0`) - BOTH return `NO_ERROR` with that
+thread's TID; neither gets `ERROR_INVALID_THREADID`. `[OBS]`, measured
+2026-08-23, real OS/2 (WSeB Warp 4.5, OS/2 2.45).** A target thread is left
+running; a second thread blocks in `DosWaitThread(&targetTID, DCWW_WAIT)` and a
+third blocks in `DosWaitThread(&0, DCWW_WAIT)`; the target then terminates. Both
+waiters wake, both return `0`, and both report the target's TID (measured
+identically across three runs). So a termination with two waits outstanding is
+delivered to BOTH - the specific waiter and the "any" waiter each observe it -
+rather than the kernel handing the thread to exactly one and failing the other.
+This is only reachable while the waits are ALREADY BLOCKED before termination:
+consistent with the paragraph above, once the target has terminated with nothing
+outstanding, a later `DosWaitThread` cannot reach it - a specific wait returns
+`ERROR_INVALID_THREADID` (309) and an `*ptid = 0` wait returns
+`ERROR_THREAD_NOT_TERMINATED` (294) with `*ptid` left 0 (no thread waitable),
+both measured. The practical consequence for a caller is unchanged: do not build
+on which waiter "owns" a termination - synchronize on the thread's own
+completion signal (above) and treat `DosWaitThread` as best-effort reclamation.
+
+**A terminated-and-reaped thread's resources are fully released, so an
+unbounded create/reap loop never exhausts memory - `[OBS]`, measured
+2026-08-22, real OS/2 (Warp 4.5, `a Warp Server for e-business system`).** Creating threads in batches
+of 8, flag-polling each to completion, then `DosWaitThread`-reaping each, for
+2000 threads per run - both with each worker idle and with each worker doing one
+`DosCreateDir`+`DosDeleteDir` - sustains with no `ERROR_NOT_ENOUGH_MEMORY` (8)
+at any count (`CTLOOP.EXE`; a `DosCreateThread` stress probe reproduces the
+same at 5600/arm on real OS/2). So a thread's stack and per-thread kernel state
+are reclaimed at termination, not merely reserved for the process lifetime, and
+`DosCreateThread` failing after a few hundred create/reap cycles is not faithful
+behaviour.
+
 ### `DosKillThread` [DOC-IBM - bsedos.h]
 
 ```c
@@ -408,6 +602,19 @@ higher* priority - it does not yield to a lower-priority thread - and returns im
 such thread is ready. A non-zero interval is rounded up to the scheduler-clock resolution, so
 the actual sleep can be a tick or two longer than requested; it is therefore not a substitute
 for a real-time clock.
+
+**Return codes, and what interrupts a sleep.** `DosSleep` returns `0` or `322`
+`ERROR_TS_WAKEUP` [DOC-IBM `cp1.txt`, "DosSleep"]. In the kernel [OBS-RE: the SMP kernel's 32-bit
+`DosSleep` worker, `_VRSleep`, and the sleep primitive `_TKSleep` it calls]: `DosSleep(0)` yields;
+`DosSleep(0xFFFFFFFF)` becomes a sleep of `0xFFFFFFFE` ms (about 49.7 days), not an infinite one;
+any other interval is an **interruptible** sleep on an address nothing else wakes, and the call
+returns `0` if the interval ran out and `322` for anything else. A forced action delivered to the
+thread - an exit or a signal - ends the sleep at once, and one already pending ends it before it
+starts; a suspend (a freeze) does not interrupt it. Measured [OBS: WSeB 4.50 revision 14.089, SMP
+kernel, 2026-09-30]: a thread sleeping 5000 ms, whose process's other thread called
+`DosExit(EXIT_PROCESS, ...)` 200 ms in, with an exception handler that continued
+`XCPT_ASYNC_PROCESS_TERMINATE`, saw `DosSleep` return `322` after 211-225 ms; `DosSleep(200)`
+measured 211-234 ms by `QSV_MS_COUNT` (a 31 ms tick).
 
 ---
 
@@ -454,6 +661,95 @@ class.
 
 ---
 
+### Dynamic priority variation - the six boosts  `[DOC-IBM]` + `[OBS-RE]`
+
+`DosSetPriority` sets a thread's **class** and **delta**. Those are not the whole
+of its dispatch priority: the scheduler adds a set of **priority-class modifier
+bits** - *boosts* - and the final priority is computed from class, modifiers and
+delta together.
+
+**The six modifiers** `[DOC-IBM]` (*OS/2 Debugging Handbook*, `TCBPriClassMod`
+Definitions):
+
+| Bit | Constant | Boost |
+|---|---|---|
+| `0x04` | `CLASSMOD_KEYBOARD` | keyboard |
+| `0x08` | `CLASSMOD_STARVED` | processor starvation |
+| `0x10` | `CLASSMOD_DEVICE` | device I/O done |
+| `0x20` | `CLASSMOD_FOREGROUND` | foreground |
+| `0x40` | `CLASSMOD_WINDOW` | window |
+| `0x80` | `CLASSMOD_VDM_INTERRUPT` | VDM simulated interrupt |
+
+**How they combine** `[DOC-IBM]`: *"Priority class and modifier values are
+logically ORed to form an index into the priority class translation table, which
+is located at global symbol `_schPriClassTbl`. The resulting value is logically
+ORed with the priority level. The final value is subject to the minimum thread
+priority (`TCBPriorityMin`)."* So a boost is **not** a delta added to the
+priority - it selects a different row of a published table, and the delta is
+ORed into the low bits of whatever that row yields. The table itself is printed
+in the handbook.
+
+**What the table says about magnitude** `[DOC-IBM]`, reading the unboosted row
+against the window-boost row:
+
+| class | no boost | window boost |
+|---|---|---|
+| Regular | `0x200` | `0x500` |
+| Foreground-server | `0x300` | `0x500` |
+| Idle | `0x100` | `0x100` |
+| Time-critical | `0x800` | `0x800` |
+
+Hence the handbook's three rules: *"Priority boosts do not affect the priority of
+idle and time-critical threads"*; *"Priority level has little or no effect on the
+priority of boosted regular and server class threads"* - a boosted regular thread
+outranks **any** unboosted regular thread whatever its delta; and
+*"`CLASSMOD_KEYBOARD` has no effect on `CLASS_SERVER`"*.
+
+**Boosts are counted, not flagged.** The TCB carries `TCBcWindowBoost`,
+*"Window Boost count"* `[DOC-IBM]`, alongside the class fields. The modifier bit
+moves only on the 0->1 and 1->0 transitions of that count, so *N* boosts require
+*N* releases `[OBS-RE]`.
+
+**Boosts are a configuration option, and turning them off is supported**
+`[DOC-IBM]`: the `PRIORITY=` CONFIG.SYS statement selects `DYNAMIC` (the
+default), under which *"I/O priority boosts are generated for keyboard input,
+window, foreground, processor starvation, device I/O, and DOS Session
+interrupts"*, or `ABSOLUTE`, which *"performs no calculation. There is no
+system-applied boost for foreground ... Only the application can adjust the
+priority of the threads."* A single Global InfoSeg field, `SIS_Dynamic`
+(*"Dynamic variation flag (1=enabled)"*, offset `0x1E`) `[DOC-IBM infoseg.h]`,
+carries that setting, and at least one boost routine tests it directly and
+becomes a no-op when it is clear `[OBS-RE]`.
+
+**Relation to `DosSetPriority`.** The two are orthogonal axes that meet in one
+expression: the API owns **class** and **delta**, the scheduler owns the
+**modifier bits**, and `_schPriClassTbl` combines them. Under `ABSOLUTE` only the
+API moves anything. IBM's own advice to a thread being starved by another
+thread's boost is either to set `PRIORITY=ABSOLUTE` or *"to call `DosSetPriority`
+on a regular basis to keep the thread's priority at the desired level"*
+`[DOC-IBM]` - i.e. the boost is not something an application can clear, only
+out-bid.
+
+**Which boosts decay and which do not** `[OBS-RE]`. The starvation and device-I/O
+bits are set and cleared continuously by the scheduler's own timeslice, sleep and
+wake paths. The **window** bit is not touched by any of them: it is held until
+explicitly released, or until the thread terminates and its control block is
+re-initialised for the slot's next occupant. Treating the window boost as
+self-expiring is therefore wrong.
+
+**The window boost has two entry points, and they do not share a count**
+`[OBS-RE]`. One is the scope-dispatched foreground call described in
+`session-manager.md`; the other is the device-help routine `ModifyPriority`
+(DevHlp `0x2C`), which IBM's own `devhlp.inc` annotates *"Undocumented (used by
+PM)"* `[DOC-IBM]`. Both take a **thread slot number**, both bounds-check it
+against the thread-slot table, and both honour the same per-thread latch - but
+the DevHlp is an uncounted toggle gated on the bit itself, and it is **not**
+gated on `SIS_Dynamic`, so it boosts under `PRIORITY=ABSOLUTE` where the
+foreground call does nothing. Mixing the two therefore desynchronises the count
+from the bit.
+
+---
+
 ## Termination handlers - `DosExitList` [DOC-IBM - bsedos.h]
 
 ```c
@@ -464,17 +760,23 @@ APIRET APIENTRY DosExitList(ULONG ordercode, PFNEXITLIST pfn);
 ```
 
 Registers (or removes) a routine to run when the process terminates. Exit-list routines execute,
-in a defined order, on **thread 1**, after every other thread of the process has ended - however the
-process began to end: `DosExit(EXIT_PROCESS)` from any thread, any `DosExit` from thread 1
-(including thread 1's function returning), or a kill that nothing intercepts [OBS-RE - the Warp 4.5
-SMP debug kernel's `_TKExit`, `_TKDieSoonPTDA` and `_TKTermThread`]. *(CORRECTED, Rule 1.7: this
-said "on the process's last surviving thread during `EXIT_PROCESS` shutdown". The two readings
-differ whenever the exiting thread is not thread 1.)* Measured from a 16-bit program on Warp 4.50
-(kernel revision 14.089, SMP) [OBS-RE - measured]: in every case above the routine ran with
-`tidCurrent` 1; other threads, sleeping or spinning, made no further progress; a thread blocked in
-`DosCWait(DCWW_WAIT)` never returned, and the process ended at once rather than waiting for the
-child. The termination code passed to the routine was 0 (`TC_EXIT`) for the `DosExit` cases and 3
-(`TC_KILLPROCESS`) for the kill. Routines with equal order values ran last-added first. While
+in a defined order, ~~on the process's last surviving thread during `EXIT_PROCESS` shutdown~~
+on **thread 1**, after every other thread of the process has ended, however the process began to
+end - `DosExit(EXIT_PROCESS)` from any thread, any `DosExit` from thread 1 (including thread 1's
+function returning), or a kill that nothing intercepts **[OBS-RE, SMP debug kernel, `_TKExit`,
+`_TKDieSoonPTDA`, `_TKTermThread`, 2026-09-26]**. Measured the same way from a 16-bit program on
+Warp 4.50 (revision 14.089, retail SMP), 2026-09-26 **[OBS]**, for `DosExit(EXIT_PROCESS)` from a
+second thread (with thread 1 sleeping, and with thread 1 in a pure loop), from thread 1,
+`DosExit(EXIT_THREAD)` from thread 1, `main` returning, `DosKillProcess` of the process itself, and a
+second thread blocked in `DosCWait(DCWW_WAIT)` on a sleeping child (and the same with thread 1 the
+blocked one): in every case the routine runs with `tidCurrent` 1, a sleeping and a spinning thread
+make no further progress, the blocked `DosCWait` never returns and the process ends at once rather
+than waiting for the child, and the routine's own `DosCWait(DCWW_NOWAIT)` on that child answers 129
+(`ERROR_CHILD_NOT_COMPLETE`). The termination code passed to the routine is 0 (`TC_EXIT`) for the
+`DosExit` cases and 3 (`TC_KILLPROCESS`) for the kill, whose parent sees `RESULTCODES` 3/0; the
+parent sees the `DosExit` result for the others (the `main` return value for `main` returning).
+Routines of equal order run last-added first **[DOC-IBM cp1.txt "DosExitList Parameter -
+ordercode"; OBS, same machine and date]**. While
 an exit routine runs, `PS_EXITLIST` is set in `pib_flstatus`. Each routine must finish by
 calling `DosExitList` with `EXLST_EXIT`, which passes control to the next registered routine.
 
@@ -490,7 +792,7 @@ bsedos.h function codes]:
 For `EXLST_ADD`, the upper bits of `ordercode` carry an ordering value (0 = run earliest,
 higher = later), letting cooperating routines sequence their cleanup.
 
-**Measured** [OBS-RE - measured on Warp Server for e-business 4.50, kernel revision 14.089, a
+**Measured** [OBS - measured on Warp Server for e-business 4.50, kernel revision 14.089, a
 32-bit program with a 32-bit DLL; codes named from `bseerr.h`]:
 
 | Input | Result |
@@ -530,9 +832,42 @@ exclusion mechanism for a whole process; the calls nest.
 
 [DOC - EDM2 "DosExitCritSec (OS/2 1.x)"] An outstanding-entry count is kept: `DosEnterCritSec`
 increments it, `DosExitCritSec` decrements it, and normal thread dispatching is only restored
-when it returns to 0. An excess `DosExitCritSec` returns `ERROR_CRITSEC_UNDERFLOW`.
+when it returns to 0. An excess `DosExitCritSec` returns `ERROR_CRITSEC_UNDERFLOW`. The count is
+kept in a **word**; on overflow it is pinned at its maximum, **no operation is performed**, and the
+call returns an error.
 
-**Measured** [OBS-RE - measured on Warp Server for e-business 4.50, kernel revision 14.089, retail
+**Return codes** [DOC-IBM - `bseerr.h`]:
+
+| Code | Name | Raised by |
+|---|---|---|
+| 0 | `NO_ERROR` | both |
+| 484 | `ERROR_CRITSEC_OVERFLOW` | `DosEnterCritSec`, nesting count would wrap |
+| 485 | `ERROR_CRITSEC_UNDERFLOW` | `DosExitCritSec`, count already 0 |
+| 309 | `ERROR_INVALID_THREADID` | `DosEnterCritSec`, another thread already owns it |
+
+**The kernel's own implementation** [OBS-RE - `os2krnl` UNI, decompiled]. Both public entry points
+are thin wrappers over near workers, and these are the exact semantics:
+
+```c
+w_EnterCritSec @ 000f:9232
+    if (owner == 0 || owner == pTCBCur) {      /* owning TCB slot */
+        if (++count == 0) { --count; return 0x1e4; }   /* 484, pinned */
+        owner = pTCBCur; return 0;
+    }
+    return 0x135;                                       /* 309 */
+
+w_ExitCritSec @ 000f:92ba
+    if (count == 0) return 0x1e5;                       /* 485 */
+    if (--count == 0) { owner = 0; /* reschedule */ }
+    return 0;
+```
+
+Two details worth having: the kernel tracks an **owning TCB**, not merely a count - so a second
+thread calling `DosEnterCritSec` while another owns the section is refused rather than allowed to
+take it over. And `w_ExitCritSec` **does not validate the caller against that owner**; it does not
+need to, since every other thread is suspended and only the owner can be running to call it.
+
+**Measured** [OBS - measured on Warp Server for e-business 4.50, kernel revision 14.089, retail
 SMP; one functional run and two concurrent stress copies]: `DosExitCritSec` without an entry
 returns 485 `ERROR_CRITSEC_UNDERFLOW`; after one `DosExitCritSec` of two nested entries the other
 threads are still frozen; nesting is refused after **65,535** entries with 484
@@ -600,17 +935,160 @@ Values these calls return on failure (0 = `NO_ERROR` on success):
 | 87 | `ERROR_INVALID_PARAMETER` | `DosCreateThread2`: bad parameter (e.g. stack address at/above 512MB) [DOC - EDM2 "DosCreateThread2"] |
 | 115 | `ERROR_PROTECTION_VIOLATION` | `DosCreateThread2`: memory-protection violation [DOC - EDM2 "DosCreateThread2"] |
 | 305 | `ERROR_NOT_DESCENDANT` | `DosKillProcess` (action `DKP_PROCESSTREE`): target is not the current process or one of its descendants [DOC - EDM2 "DosKillProcess (OS/2 1.x)"] |
-| 322 | `ERROR_TS_WAKEUP` | `DosSleep`: the sleep was ended by something other than the interval running out - a forced action (an exit or a signal) delivered to the thread. 0 and 322 are the only returns [DOC-IBM `cp1.txt`, "DosSleep Return Value - ulrc"]. In the kernel the sleep is interruptible, `DosSleep(0xFFFFFFFF)` becomes a sleep of `0xFFFFFFFE` ms rather than an infinite one, and a suspend does not interrupt it [OBS-RE - the SMP kernel's `_VRSleep` / `_TKSleep`]. Measured on Warp Server for e-business 4.50: a thread sleeping 5000 ms whose process's other thread called `DosExit(EXIT_PROCESS)` 200 ms in (with a handler continuing `XCPT_ASYNC_PROCESS_TERMINATE`) got 322 after about 210-225 ms [OBS-RE - measured]. *(Previously "listed as a possible return (EDM2 does not further define it)".)* |
+| 322 | `ERROR_TS_WAKEUP` | `DosSleep`: the sleep was interrupted (an exit or signal forced action) rather than timed out - see `DosSleep` above [DOC - EDM2 "DosSleep (FAPI)"; OBS-RE; OBS] |
 | 485 | `ERROR_CRITSEC_UNDERFLOW` | `DosExitCritSec`: more `DosExitCritSec` calls than matching `DosEnterCritSec` calls [DOC - EDM2 "DosExitCritSec (OS/2 1.x)"] |
 
 ---
 
+## Thread Local Memory Area (TLMA)
+
+`DosAllocThreadLocalMemory` / `DosFreeThreadLocalMemory` allocate from a per-thread region
+called the **Thread Local Memory Area (TLMA)**.
+
+**Size and allocation granularity** [DOC-IBM, *Control Program Guide*, `cp3.txt`]:
+
+> "The thread local memory region is **32 DWORDS** (4 bytes per DWORD) in size, and up to
+> **8 DWORDS** can be allocated with each call to `DosAllocThreadLocalMemory`. To allocate
+> more than 8 DWORDS, a thread must call `DosAllocThreadLocalMemory` more than once."
+
+The same text warns that thread local memory "should be used sparingly" and that an
+application should not consume the whole 128-byte region.
+
+**How it is made per-thread - the part that is easy to get wrong** [DOC-IBM, *OS/2 Debugging
+Handbook* Vol. I glossary and Vol. II]:
+
+> "The Thread Local Memory Area (TLMA) [is] an area of private arena memory that is
+> instantiated at a thread level. This is achieved by **copying the contents of the TLMA to
+> `dfff:0024` when a thread switch occurs**. The TLMA contents are saved in the TCB at
+> `TCBTLMA`."
+
+> "Descriptor `dfff` maps a global shared memory object, but its data is **copied from the
+> incoming PTDA and TCB when a context switch occurs**. This achieves the effect of thread
+> local memory."
+
+So the TLMA is **not** a distinct mapping per thread. It lives at **one fixed address, shared
+by every thread**, and the kernel gives it per-thread semantics by **copying its contents in
+and out on every context switch**, saving the outgoing thread's copy into that thread's TCB.
+
+Consequences that follow directly, and matter to anyone reimplementing this:
+- A pointer returned by `DosAllocThreadLocalMemory` is **the same address in every thread**.
+  Caching it in per-process (even global) storage is therefore correct and is what real code
+  does - the value never varies; only the memory behind it is swapped.
+- Reading the TLMA in a debugger shows **the current thread's** contents only. Another
+  thread's copy must be read from that thread's `TCBTLMA`.
+
+**Layout and bookkeeping** [DOC-IBM, *Debugging Handbook* Vol. IV structure tables, Vol. I]:
+
+| item | location | size | note |
+|---|---|---|---|
+| `TCBTLMA` | TCB `+0x74` (`+0x78` after Warp 3 FixPak 7) | `0x80` (128 bytes) | the saved per-thread copy; matches the 32 DWORDs above |
+| TLMA itself | LDT descriptor `dfff`, immediately after the LIS - **`dfff:0024` on UNI, `dfff:002C` on SMP** (see below) | - | tiled selector `0xDFFF` -> flat `0x1BFF0000` |
+| `ptda_TLMA` | PTDA | 4 | "in use flag and dword copy" |
+| `ptda_TLMABM` | PTDA | 4 | allocation bitmap |
+| `ptda_TLMASizeMap` | PTDA | `0x20` | per-allocation size map |
+
+**The offset depends on the kernel flavour, and this is easy to get wrong.** The LIS
+(`InfoSegLDT`) is mapped at `dfff:0000` and the TLMA begins immediately after it, so the TLMA's
+offset *is* `sizeof(InfoSegLDT)`:
+
+- **UNI: 36 bytes (`0x24`)** -> TLMA at `dfff:0024`, which is the figure the *Debugging Handbook*
+  quotes (a February 1996, Warp-3-era book).
+- **SMP: 44 bytes (`0x2C`)** -> TLMA at `dfff:002C`. The SMP `InfoSegLDT` appends two fields
+  [DOC-IBM, DDK `base/h/infoseg.h`]:
+  ```c
+  #ifdef SMP
+  unsigned long   LIS_pTIB;       /* Pointer to TIB */
+  unsigned long   LIS_pPIB;       /* Pointer to PIB */
+  #endif
+  ```
+> **RETAGGED `[OBS]`, THEN RESTORED TO `[OBS-RE]` - 2026-08-31 (Rule 1.7).**
+> A third correction pass moved the claim below from `[OBS-RE]` to `[OBS]`,
+> reasoning that "the value is a RETURN VALUE from a live call" and that a ring-3
+> probe reading memory is still a capture. The tag is restored, and the reason is
+> **not** that the value is unreachable from ring 3 - it is reachable, and saying
+> otherwise was the retag's mirror-image error.
+>
+> **What makes this `[OBS-RE]` is the ATTRIBUTION, not the value.** The claim is
+> not "this cell holds `0x1BFF002C`" - a ring-3 read after initialisation returns
+> that in every process. The claim is that the value is *the out-parameter of the
+> first `DosAllocThreadLocalMemory` call `PMMERGE` makes during `WinInitTerm`*,
+> and nothing you can read at run time says so. That step comes from
+> disassembling the gate and resolving its import from the module's own fixup
+> record - an interpretation of the binary, re-verified by reading the bytes
+> again, which is what `[OBS-RE]` names (`README.md`, *Provenance*). A capture
+> gives you the number; only the binary tells you which call site produced it.
+> (Precisely: the fixup record yields an *ordinal*, `DOSCALLS.#454`. Putting the
+> name `DosAllocThreadLocalMemory` to that ordinal is a separate step resting on
+> published ordinal lists - a weaker source, and one this corpus never treats as
+> authority. The tag is unaffected: the interpretive step it turns on is that
+> this cell is the out-parameter of the call at that site, which is read from
+> the binary alone.)
+>
+> **The site does not name its own instrument, and that is the general case.**
+> The tag is settled by what the load-bearing step requires, not by anything the
+> site says. A keyword sweep cannot decide that; only a semantic read of each
+> remaining `[OBS-RE]` claim can.
+
+  Corroborated `[OBS-RE]` (2026-08-02; the instrument is not recorded at the
+  site - the tag rests on the attribution being established by disassembly, see
+  the note above): on a live Warp Server for e-business kernel,
+  `PMMERGE`'s own first `DosAllocThreadLocalMemory(7, &p)` during `WinInitTerm` returns
+  **`0x1BFF002C`** - i.e. slot 0 of a TLMA based at `0x2C`, not slot 2 of one based at `0x24`.
+
+**Field detail, from IBM's own worked example** [DOC-IBM, Vol. I, "Exploring 32-bit Presentation
+Manager Under WARP" - a live `dd %<tcb>+74` dump]:
+
+| offset in TLMA | contents |
+|---|---|
+| `+0x08` | last PM error on this thread (the example shows `00041304`, severity 4 / `PMERR_NOT_IN_IDX`) |
+| `+0x0c` | the PMQ - pointer to this thread's PM message queue |
+
+Vol. I's prose says "offset `+0x0c` into the TLMA are the AAB registers"; its own dump puts the
+error word at `+0x08` and the queue pointer at `+0x0c`. Prefer the dump.
+
+**Principal consumer - PM.** "A PM Application Anchor Block is allocated in the Thread Local
+Memory Area (TLMA) when a PM application thread creates a message queue. The AAB contains a
+pointer to the MQ which allows PM to find the MQ in any context." [DOC-IBM, Vol. I] Because the
+TLMA is saved in each thread's TCB, a debugger can locate the message queue of any PM thread in
+the system.
+
+## How this survives SMP - one linear address, per-processor memory
+
+The copy-on-context-switch mechanism above cannot work as literally stated on a multiprocessor:
+two threads of one process, running on two CPUs, both reach `dfff:0024`, and repainting on
+switch-in cannot give them different contents at one address.
+
+**OS/2 resolves this with per-processor aliasing of a linear address, and IBM documents the
+mechanism** [DOC-IBM, *SMP Programming Addendum*, `SMP.INF`, describing a Platform Specific
+Driver's Processor Local Memory Area]:
+
+> "pPSDPLMA points to the PSD's processor local memory area. **This area contains different
+> physical memory at the same linear address across all processors.** You can use the area to
+> store variables such that each processor accesses unique values, but all the code references
+> the same variables."
+
+That is stated for the PSD's PLMA (256 bytes, minimum guaranteed size), not for the TLMA.
+**`[INF]`** - but it is the mechanism that makes the TLMA coherent on SMP, and no other is
+available: each CPU has its own physical page behind `dfff`, and the kernel repaints *that
+CPU's* copy for the thread it schedules there. The consequence worth carrying:
+
+> **The number of live TLMA copies equals the PROCESSOR count, not the thread count.** Correctness
+> then follows from "one thread runs per CPU at a time" - which is free. On a uniprocessor there
+> is exactly one copy and exactly one running thread, and the plain copy-on-switch description is
+> literally true.
+
+**Negative result** [Rule 1.6 - expensive to establish, free to record]: the *Debugging
+Handbook* does **not** document any SMP structure variants. Its TCB and PTDA tables vary by
+version and fixpack only (Warp V3.0, +FixPak, +FixPak 11, V2.11, V2.11+FixPak 90; ALLSTRICT vs
+RETAIL), and its SMP content is spin-lock and serialization guidance. Do not re-search it for
+per-CPU layout; the *SMP Programming Addendum* is where the SMP architecture lives.
+
 ## Related calls (out of scope here, cross-reference)
 
 `DosCreateThread2`'s affinity companions `DosQueryThreadAffinity` / `DosSetThreadAffinity` (with
-`MPAFFINITY`, `AFNTY_THREAD`/`AFNTY_SYSTEM`) and the thread-local-storage calls
-`DosAllocThreadLocalMemory` / `DosFreeThreadLocalMemory` are declared alongside these in
-`bsedos.h` [DOC-IBM]. `DosQueryAppType` (session-manager surface, `FAPPTYP_*`) reports a
+`MPAFFINITY`, `AFNTY_THREAD`/`AFNTY_SYSTEM`) are declared alongside these in `bsedos.h`
+[DOC-IBM]; the thread-local-storage calls are described under "Thread Local Memory Area"
+above. `DosQueryAppType` (session-manager surface, `FAPPTYP_*`) reports a
 program's type before executing it. See the memory-model and session-manager references for the
 address-space and session context these operate in.
 

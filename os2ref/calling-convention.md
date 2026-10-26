@@ -106,6 +106,174 @@ This is the mirror image of `_System` on both axes that matter: **left-to-right*
 argument order, and **callee-cleans** vs caller-cleans. That mismatch - plus the 16:16-vs-flat pointer
 difference - is exactly why a call cannot cross the 16/32 boundary directly.
 
+### Where the callee-pop count `n` is recoverable from [OBS-RE]
+
+Because the callee cleans up, every 16-bit API entry point has one correct argument-byte count
+baked into it, and getting it wrong strands the caller's arguments on its stack. **The kernel
+states that count per ordinal, in its own entry stub.** Each public 16-bit DOSCALLS entry point
+in `OS2KRNL` is a stub whose entire body is a call to the shared syscall prologue with this
+entry's byte count as the sole argument - rendered `pre_sci(N)` by a decompiler, e.g.
+`DOSMKDIR` -> `pre_sci(8)`, `DOSMKDIR2` -> `pre_sci(0xc)`, `DOSOPEN` -> `pre_sci(0x1a)`. `N` is the
+`RETF` immediate the entry returns with, and it equals the sum of the parameter widths in the
+16-bit prototype (`DosOpen`: 4+4+4+4+2+2+2+4 = 26 = `0x1a`).
+
+Four properties worth knowing before relying on it:
+
+- **It is stable across kernel builds; the address is not.** `DOSMKDIR` is `pre_sci(8)`,
+  `DOSMKDIR2` is `pre_sci(0xc)` and `DOSOPEN` is `pre_sci(0x1a)` in the SMP and UNI kernels alike
+  and in both their base and debug variants - while the *object* the stub lives in differs
+  between them (`000f:` on UNI, `0010:` on SMP). The count is an ABI fact; the address is a build
+  fact.
+- **The count is a PUSH, and the push is authoritative however the body renders.** The stub
+  really is `push <argbytes>` / `call <prologue>`. Where a decompiler recognises the pair it
+  prints `pre_sci(0xc)`; where it inlines the prologue instead it prints a bare `pre_sci()` with
+  the value a few lines above as a stack store (`*(undefined2 *)(sp + -2) = 0xc;`). Same value,
+  two renderings of one instruction sequence - read the push, not the argument list.
+
+  **This is safe by construction, not by sampling, and `pre_sci`'s own code is why.** `pre_sci`
+  reads the pushed value at `[esp+0xa]`, rounds it up to a multiple of 4, and uses it to index a
+  table - **and uses it for nothing else**. The table's entries are IBM's own named return stubs
+  `SCIReturn0`, `SCIReturn2`, ... `SCIReturn36`, each `popfd; retfd <N>`, with
+  `table[count] == SCIReturn<count>` exactly (plus a compensating `sub ...,2` so the net pop equals
+  the un-rounded count). **IBM's naming states the semantic: the pushed argument selects the
+  return stub, so the pushed argument IS the callee-pop count.** A body's shape cannot change
+  that, so an unrecognised rendering is a decompiler artifact with no bearing on the contract.
+  Measured at scale: 189 named kernel entries per debug image open `push imm; call (mp)pre_sci`,
+  and raw bytes agree with the decompile's first value 189 of 189 times. **[OBS-RE.]**
+
+  **The two renderings coexist inside one image, function by function** - the debug-SMP image
+  renders `DOSMKDIR2`, `DOSMAKENMPIPE` and `DOSQNMPHANDSTATE` inlined while rendering `DOSIOPENL`
+  in that same image as a plain `pre_sci(0x24)`. So there is no image to trust wholesale and none
+  to discard; check the shape at each symbol, take the push, and move on.
+- **The SMP 16-bit stubs call `mppre_sci`**, not `pre_sci`, in raw disassembly. It is the same
+  declaration under an MP-specific name - **measured, not assumed**: the two are byte-identical
+  through the argument prologue (same table, same rounding) and diverge only after the argument
+  has been consumed, and 26 entries that call `mppre_sci` on SMP call `pre_sci` on UNI with
+  identical immediates. **[OBS-RE.]**
+- **Not every entry is a single-statement stub** - but where such an entry still opens
+  `push imm; call (mp)pre_sci`, that immediate is still the count, for the `SCIReturn` reason
+  above. What genuinely falls outside this rule is an entry that does not route through the
+  shared prologue at all: those validate arguments and call the worker directly, and have no
+  argument-byte declaration to read. Distinguish the two by whether the prologue is called, not
+  by how many statements the body decompiles to.
+
+**`OS2KRNL` is not the only home.** The session-manager family (`DOSSMSWITCH`,
+`DOSSTOPSESSION`, `DOSSELECTSESSION` and their siblings) lives in `DOSCALL1.DLL`, which has no
+`pre_sci` stubs at all; there the count is read directly off the entry's own `retf n` - e.g.
+`DOSSTOPSESSION` (obj3+0x97d6) ends `retf 0x8` at `DOSSTOPSESSION_POSTDT` (obj3+0x987d), matching
+`USHORT DosStopSession(USHORT, USHORT, ULONG)` = 2+2+4. Scanning for a `0xCB` byte to find that
+`retf` is unreliable - the same byte occurs inside earlier instructions - so the entry must be
+disassembled from its published start, not searched for.
+
+Two more `DOSCALL1.DLL`-resident blocks read the same way, and they show the two shapes that turn
+up there. The **16-bit named-pipe family** `#399`-`#412` is fourteen thin argument-forwarding
+shims - `enter 0,0`, re-push the caller's words, one far call, `leave`, `retf n` - whose
+immediates run `0x14, 0xa, 0x2, 0x2, 0x6, 0x4, 0x14, 0x8, 0x12, 0x18, 0xc, 0xc, 0x8, 0xa`, each
+equal to the sum of its 16-bit prototype's parameter widths. `DOSCLOSEMESSAGEFILE` (obj3+0x6f00,
+the target of `MSG.DLL` ordinal 9) is the degenerate case: it ends in a **bare `retf`** - opcode
+`0xCB`, no immediate - so its count is **0**, corroborated by a decompiled signature taking no
+parameters. A bare `retf` is a real answer, not a failed read; do not go looking for a missing
+immediate.
+
+#### The CALLER states it too, in a 32->16 universal-thunk slot [DOC-IBM / OBS-RE]
+
+Everything above reads the count off the **callee**. There is an independent **caller-side**
+statement of the same number, and where both exist they must agree - the callee's `retf n` pops
+exactly what the caller pushed, so a disagreement is a real defect rather than a matter of taste.
+
+A 32-bit module that calls a 16-bit entry through the universal thunk emits a small trampoline
+slot per target. IBM's own `UniThunk3216` macro generates it, and states the encoding exactly
+(`thk2asm`'s `systhunk.inc`, Developer Connection). The lines below are IBM's, including the one
+comment, with one elision: in the source `sub ecx,ecx` sits inside an `ifb <hTypes>` conditional,
+and `mov ecx,&hTypes` is emitted in its place when a high half is supplied.
+
+```
+DB      0B8h                ;mov eax,imm32
+DW      OFFSET &c2
+DW      SEG    &c2
+@@:     mov     edx,&lTypes
+        sub     ecx,ecx
+        jmp     THK32_UNITHUNK
+```
+
+The `mov eax,imm32` operand is the 16:16 target - offset half then selector half - which is why a
+module's LX import fixups for that target land at slot+1 and slot+3.
+
+`lTypes` (with `hTypes`, forming one 64-bit value consumed LSB-first) is the **parameter-list
+descriptor**: a count nibble followed by a per-parameter tag - DWORD, WORD, or pointer with a
+size class - so summing the pushed widths it describes yields the callee's frame size in bytes.
+The grammar itself is documented in `thunking.md`; the point here is only that the number is
+recoverable from the caller.
+
+Worked instance, `[OBS-RE]`, from the shipped Warp 4.50 binaries. `PMMERGE.DLL` obj4+0x2104 is
+such a slot, its `mov eax,imm32` operand carrying the two LX import fixups (`stype=5` offset at
++1, `stype=2` selector at +3) that name `DOSCALLS.575`:
+
+```
+B8 00 00 00 00      mov eax,<16:16 DOSCALLS.575>
+BA 44 EF 00 00      mov edx,0EF44h            ; lTypes
+2B C9               sub ecx,ecx               ; hTypes = 0
+```
+
+`0EF44h` decodes as count=4 - DWORD, pointer, pointer, DWORD - = 16 bytes, and the callee,
+`DOSPMMUXSEMWAIT` at `DOSCALL1.DLL` obj3+0x02f4, ends `retf 0x10`. The two sides agree.
+
+**The control.** That object carries 1838 `DOSCALLS` fixup records over 128 distinct ordinals, but
+only **thirteen** of them are `stype=2` selector halves - i.e. thirteen trampoline slots. Decoding
+all thirteen descriptors yields a frame size for each, and for the **nine** whose callee is
+resident in `DOSCALL1.DLL` the callee's own `retf` immediate is recoverable as well. All nine
+agree:
+
+| ordinal | callee | descriptor decodes to | callee `retf` |
+|---|---|---|---|
+| 140 | obj3+0x00a0 | 8 | 8 |
+| 141 | obj3+0x00f5 | 4 | 4 |
+| 143 | obj3+0x0190 | 4 | 4 |
+| 575 | obj3+0x02f4 | **16** | **16** |
+| 790 | obj4+0x3b2d | 6 | 6 |
+| 791 | obj4+0x3b4e | 6 | 6 |
+| 814 | obj4+0x3e15 | 8 | 8 |
+| 817 | obj4+0x3e36 | 6 | 6 |
+| 819 | obj4+0x3e59 | 6 | 6 |
+
+The remaining four slots - ordinals 8, 22, 101 and 160 - are answered by the kernel rather than by
+`DOSCALL1.DLL`, so that file holds no `retf` for them and the caller-side descriptor is the only
+statement of their frame size available from these two binaries. The reading is therefore
+controlled rather than fitted to one case.
+
+**Two cautions.** The descriptor is an **instruction immediate**, so it is invisible to any text
+search of sources, symbol tables or documentation - it is found only by disassembling the slot.
+
+And **the slot shape varies, so the operand is not at a fixed displacement from the fixup.** The
+same macro emits a second form, and IBM's source is explicit about it - the `@@:` label sits on
+the `mov edx`, not at the top of the slot, precisely so that later slots can jump back to it:
+
+```
+        ifidn   <lTypes>,<shared>
+            jmp     @B
+        else
+@@:         mov     edx,&lTypes
+            ...
+            jmp     THK32_UNITHUNK
+        endif
+```
+
+So when the author writes the literal token `shared` in place of a descriptor, the slot gets no
+`mov edx`/`sub ecx` at all: just the `mov eax,imm32` and a two-byte jump to the nearest preceding
+`@@:`, i.e. to the descriptor of the last slot that spelled one out. Ordinals 791, 817 and 819 in
+the table above are all of that form, all three chaining back to ordinal 790's:
+
+```
+B8 00 00 00 00      mov eax,<16:16 DOSCALLS.791>
+EB EA               jmp short  -> the mov edx,15D2h inside ordinal 790's slot
+90                  pad
+```
+
+Read a doubleword where the inline form keeps `lTypes` and you get the jump displacement, the pad
+and the next slot's `B8` opcode - a number with no meaning. **Follow the jump.** Matching only the
+inline shape and discarding the rest is the other failure: it would drop three of these thirteen
+slots as "not trampolines" when they are, and lose two thirds of the control above.
+
 ## Why 16<->32 thunking exists -> `thunking.md`
 
 Because the 32-bit (`_System`, flat) and 16-bit (`_Far16 _Pascal`, segmented) conventions differ in

@@ -23,6 +23,16 @@ reader knows what is IBM's word versus an observation of the binaries, and can r
   VM. Authoritative for **shape** - offsets, sizes, call order - and for facts IBM never
   documented. This is an interpretation of the binary; it is marked so it is never mistaken
   for IBM's word.
+- **[OBS]** - observed by **measuring the running system's behaviour**: a program is run on real
+  OS/2 and what it returns is recorded. Authoritative for **behaviour** - what a call actually does
+  with a given input, including where that contradicts the documentation - but it is a fact about
+  one build and one configuration, and may not generalise. Distinct from [OBS-RE]: a capture
+  involves no interpretation of code. Re-check by running the probe again.
+- **[OBS-USER]** - firsthand long-term observation of real OS/2 by a person, with no capture kept.
+  Weaker than [OBS] because nothing was recorded, so it can only be corroborated, not re-run.
+- **[INF]** - derived by reasoning over facts that are themselves sourced: a conclusion, neither
+  observed nor documented. Marked because this is where a plausible-but-wrong step hides, and
+  because it can only be re-argued, not re-run.
 - **[DOC]** - other published references (osFree, EDM2), cross-checked.
 - **[SRC]** - read directly from the source of a component that is *not* OS/2 itself but ships
   with it or on it, with file and line cited (e.g. kLIBC / LIBC Next, in
@@ -78,6 +88,8 @@ Find the row that matches what you are doing and load only those docs.
 | Clipboard or DDE | `clipboard-dde.md` |
 | Drag and drop | `drag-drop.md` |
 | Text-mode (VIO/KBD/MOU) console apps | `vio-kbd-mou.md` |
+| Who owns the screen from boot to PM; text-to-graphics switch; video drivers no CONFIG.SYS line names | `video-stack.md` |
+| Installing or switching a display driver (`DSPINSTL`/`RSPDSPI`, `.DSC`/`.DSP`) | `display-driver-install.md` |
 | `.INI` profiles (`PrfQueryProfileData`, ...) | `profiles-ini.md` |
 | Code pages, Unicode, `UniTranslateString` | `unicode-conversion.md` |
 | Video playback / DIVE / MMPM/2 | `dive-video.md`, `mmpm2-multimedia.md` |
@@ -147,6 +159,8 @@ the LIS form follows the kernel *variant*, not the CPU count.
   - `gpi-drawing.md` - the `Gpi*` drawing API, device contexts, presentation spaces, transforms
   - `gpi-fonts-and-metafiles.md` - GPI logical/outline fonts (`FATTRS`), bitmaps, and metafiles
   - `vio-kbd-mou.md` - text-mode video / keyboard / mouse (`Vio*`/`Kbd*`/`Mou*`)
+  - `video-stack.md` - the video stack from power-on text mode to Presentation Manager: who owns the display at each boot stage, and who switches the hardware to graphics
+  - `display-driver-install.md` - display-driver installation: `DSPINSTL`/`RSPDSPI`, the `.DSC`/`.DSP` package formats, and what an install writes to CONFIG.SYS and OS2.INI
 - Persistence and file metadata:
   - `profiles-ini.md` - the `Prf*` profile (INI) API for persistent settings (`OS2.INI`/`OS2SYS.INI`)
   - `extended-attributes.md` - the EA model (`FEA2`/`GEA2`/`EAOP2`), standard EAs, `DosQueryPathInfo`/`DosSetPathInfo`

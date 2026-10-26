@@ -30,6 +30,31 @@ copy of the DLL code, and the code in a DLL can be changed without re-linking th
 use it. [DOC - GG24-3774 "Dynamic Link Libraries".] A program resolves the external references to
 a DLL's exported entry points in one of two ways:
 
+> **Provenance corrected 2026-08-31 (Rule 1.7), third pass.** 1 claim here
+> was tagged `[OBS-RE]` and is now `[OBS]`. **No claim changed.** The
+> discriminator is the METHOD, not the subject: `[OBS-RE]` names RE of a binary
+> or the kernel debugger; `[OBS]` names a program run on real OS/2 whose result
+> was recorded.  A ring-3 probe that *reads memory* is still a capture -
+> you re-verify it by running the probe again, not by reading bytes - and that
+> edge is what made this look like `[OBS-RE]`. Found on review: the earlier sweeps' keyword list did not match "observed on" or
+> "on a live", so this sat outside a bound that claimed to cover it.
+
+> **A DLL's objects are placed once, system-wide; later processes attach to that placement.**
+> `[OBS]` "The same memory-resident copy" has a consequence that is easy to miss when
+> reimplementing the loader: the *addresses* are a system-wide property, not a per-process
+> decision. Observed on Warp 4.50 - a DLL already loaded by one process is found at identical
+> object addresses in every other process that uses it, and nothing re-places it. The loader
+> lives in the kernel and holds one view of the shared arena; a second user attaches rather
+> than deciding for itself.
+>
+> This is what makes it safe for code in a DLL's shared data to cache a resolved entry-point
+> address and for another process to call it - which OS/2 code does. It also means a design
+> with one loader *per process*, each choosing addresses independently, is not merely slower
+> but wrong: two processes will disagree about where a DLL's code lives, and any cached
+> cross-process pointer becomes a wild branch. Preferred load addresses (section executable-formats,
+> `E32NOINTFIX`) hide this for as long as every module happens to land where its header asked,
+> and stop hiding it the moment one relocates.
+
 - **Load-time (implicit) linking.** The reference is resolved by the loader when the program
   module is loaded: the executable records an import of "export *N* (or export name *S*) of module
   *M*", and the loader loads *M* and binds the reference before the program runs. The program
@@ -132,12 +157,12 @@ and repeat. [DOC - EDM2 "DosQueryProcAddr".]
 [DOC - EDM2 "DosQueryProcAddr".]
 
 > **CORRECTED (Rule 1.7):** for a name the module does not export, real OS/2 returns **127
-> `ERROR_PROC_NOT_FOUND`**, not 123, and leaves `*ppfn` untouched [OBS-RE - measured on Warp Server
+> `ERROR_PROC_NOT_FOUND`**, not 123, and leaves `*ppfn` untouched [OBS - measured on Warp Server
 > for e-business 4.50, kernel revision 14.089, against a DLL of the probe's own]. A by-name lookup
 > on `DOSCALLS` likewise returns 127. Code that tests for 123 to mean "no such export" never sees
 > it.
 
-**More measured module-manager results** [OBS-RE - same system; a 32-bit probe and two DLLs of its
+**More measured module-manager results** [OBS - same system; a 32-bit probe and two DLLs of its
 own, plus lookups on `DOSCALLS`, `DOSCALL1` and `UCONV`]:
 
 - `DosLoadModule` of a missing DLL returns 2 and names it in the object buffer. A DLL whose
@@ -200,7 +225,7 @@ APIRET APIENTRY DosQueryResourceSize(HMODULE hmod, ULONG idt, ULONG idn, PULONG 
 (`bsedos.h:2284-2296`; `DosGetResource2` is a macro for `DosGetResource`.) `hmod` 0 means the
 calling program's own EXE.
 
-**The three failures are 126, 87 and 87 - and 126 is not "resource not found"** [OBS-RE - measured
+**The three failures are 126, 87 and 87 - and 126 is not "resource not found"** [OBS + OBS-RE - measured
 on Warp Server for e-business 4.50, kernel revision 14.089, with a DLL of the probe's own; the
 kernel's loader read with its symbols]:
 
@@ -233,7 +258,7 @@ APIRET APIENTRY DosReplaceModule(PSZ pszOldModule, PSZ pszNewModule, PSZ pszBack
 (`bsedos.h:2194-2199, 2213-2220`.) `DosQueryModFromEIP` maps a code address (`Address`) back to the
 module handle, object number, name, and offset that contain it - the basis of a symbolic
 backtrace. **The object number is zero-based** (LX object 1 is reported as 0); an address in no
-module returns 487 `ERROR_INVALID_ADDRESS`; a `BuffLen` of 2 still returns 0 [OBS-RE - measured on
+module returns 487 `ERROR_INVALID_ADDRESS`; a `BuffLen` of 2 still returns 0 [OBS - measured on
 Warp Server for e-business 4.50, kernel revision 14.089]. `DosReplaceModule` swaps a module's on-disk file (optionally saving a backup) so a
 loaded module can be updated. (The prototypes are transcribed from `bsedos.h`; the header carries
 no descriptive prose, so the behavioral summaries above are read from the parameter names, not a
@@ -342,7 +367,160 @@ applies. [DOC-IBM - GG24-3774 "Creating a DLL"; Toolkit `.DEF` samples.] A DLL a
 separate processes generally also declares `DATA MULTIPLE` so each process gets its own copy of the
 DLL's data segment. [DOC - GG24-3774 "Creating a DLL".]
 
+### A module handle is the caller's only if the caller uses the module `[OBS]`
+
+Measured on WSeB 4.50: a process that never loaded PMWIN gets its handle from
+`DosQueryModuleHandle("PMWIN")` (PMWIN being loaded by other processes), and then
+`DosQueryProcAddr` on that handle - by name or by ordinal - returns **6**
+`ERROR_INVALID_HANDLE`, `DosGetResource` returns **6**, and `DosFreeModule` returns **6**. A handle
+that names no module at all gives `DosQueryProcAddr` 6 but `DosGetResource` **126**.
+
+### Argument edges of the module calls `[OBS]`
+
+Measured on WSeB 4.50 (revision 14.089, SMP), one process per case:
+
+- **`DosLoadModule`**: a `phmod` that cannot be written (`NULL`, or an address in code) returns
+  **87** `ERROR_INVALID_PARAMETER` whether or not the load itself succeeded. When it succeeded, the
+  module is left loaded (`DosQueryModuleHandle` in the same process then finds it) and `pszName` is
+  untouched; when it failed - a missing import - `pszName` still names the failing module, but the
+  return is 87, not the load's own error. A failed load writes **0** to `*phmod`. A
+  fully-qualified name whose directory does not exist is **3** `ERROR_PATH_NOT_FOUND`; one whose
+  directory exists but whose file does not is **2**; both copy the name given to `pszName`.
+- **The internal name against the file name** (`[OBS-RE]` the kernel's internal-name check, read
+  at the instruction level in two SMP builds; `[OBS]` measured, three runs). On a library load - a
+  `DosLoadModule`, or an import - take *B*, the basename of the file opened, uppercased and cut at
+  its last `.` whatever the extension, and *N*, the module's internal name (its first resident
+  name). For *B* up to 8 characters the load fails with **123** `ERROR_INVALID_NAME` exactly when
+  *B* differs from *N* **and** *N* is no longer than *B*; `pszName` then receives the uppercased
+  full path. So a module named `INST` loads from `INST.DLL`, `INST.FOO`, `E.DLL`, `INS.DLL` and
+  `A.B.DLL`, and is refused from `ELDLL.DLL`, `ELDLL.FOO`, `INSTX.DLL`, `INST.X.DLL` and
+  `ABCDEFGH.DLL`. Whether another module of that internal name is already loaded plays no part.
+  For a basename over 8 characters the comparison runs past the 8-byte name field and gives no
+  rule (9-, 10- and 13-character names were refused and a 20-character one loaded, on one boot).
+  The check runs before the module is linked, so a refused module is never loaded. After loading,
+  a module is found by its internal name for a bare-name request or an import, and by its full
+  path for a path-qualified one `[OBS-RE]` (the kernel's module lookup: global modules matched by
+  module name, specific ones by full path).
+- **`DosQueryProcAddr`**: the handle is checked first - with a bad handle every case below is 6. A
+  `pszName` of the form `"#n"` (ordinal 0) returns ordinal *n*'s address. Ordinal 0 with a `NULL`
+  `pszName` is **115** `ERROR_PROTECTION_VIOLATION`. The ordinals tried above the documented limit
+  of 65533 - 65534, 65535, 65536 and 70000 - and 65533 itself, like an ordinal the module does not
+  export, were **182** `ERROR_INVALID_ORDINAL`. A `ppfn` that cannot be written
+  (`NULL`) is **not** an error return: the caller ends with exception 5 (an access violation;
+  `SYS1808`).
+- **`DosQueryModuleHandle`**: a bare name finds the module with or without its `.DLL` extension; a
+  fully-qualified name finds it only when it names the file the module was loaded from (another
+  directory is **126**). On 126, `*phmod` is overwritten - 0x9F44 was read back whatever it held
+  before; what that value is was not established.
+- **`DosFreeMem`** on the base of a DLL's own object returns **0**: the object is freed. On the
+  EXE's own code object the caller ends with exception 5 before it prints again (that it died
+  returning into freed code is the likely mechanism; only the `SYS1808` was observed).
+
+### Which DLLs get a termination call, and in what order `[OBS-RE]`
+
+**Only a module with the per-process termination bit (`0x40000000`, `TERMINSTANCE`) is handed
+its termination call** - on both paths that terminate DLLs: at process exit, and when
+`DosFreeModule` lets a module go while the process lives. The kernel keeps the LX module flags
+verbatim in the module table entry and both paths select on that bit; a module without it is let
+go with no call. The global form above ("likewise for termination", `lxref.htm`) is not reached
+by either path. **Measured [OBS], WSeB 4.50:** a DLL marked `INITGLOBAL` without `TERMINSTANCE`,
+whose entry routine logs every call to a file, is initialized on `DosLoadModule`, gets **no** call on
+`DosFreeModule`, and none when a process exits with it loaded; loaded again after the last process
+let it go, it is initialized again. IBM's CP Guide table of `LIBRARY` options lists `INITINSTANCE`, `INITGLOBAL` and
+`TERMINSTANCE` only `[DOC-IBM]`.
+
+**Order at process exit:** the terminations are exit-list entries (after the ordinary exit-list
+routines), run on thread 1. The kernel visits its module chain - path-loaded ("specific")
+modules and `LIBPATH`-loaded ("global") ones in separate lists, each newest first - and puts each
+module's entry in front of the others of its order, so the routines run **path-loaded modules
+oldest first, then `LIBPATH` modules oldest first**, "oldest" being when the module was entered in
+the chain. Termination order is therefore **not** the reverse of initialization order.
+`DosFreeModule`'s terminations, for the modules a free lets go, run in the same order.
+**Not established:** whether a module is entered in the chain before or after the modules it
+imports, so whether dependants terminate before their dependencies.
+[OBS-RE - SMP kernel: `_LDRDLLExitList`, `_ldrRegisterDLLTerm`, `_ldrSetupDLLTerm`,
+`_ldrEnumDLLTerm`, `_ldrRunGraph`, `_ldrLinkMTE`, `_tkAddExitListRoutine`, `_ldrCreateMte`.]
+
 ---
+
+## The `DOSCALLS` ordinal namespace is split across two modules `[OBS-RE]`
+
+`DOSCALLS.#N` is **one 1..1117 ordinal namespace answered by two different
+modules**, not by one file:
+
+- a **kernel-resident pseudo-module** - `_DosModMte`, whose module name is the
+  literal string `DOSCALLS` inline at `MTE+0x18`, with its own entry table
+  (`dcm_entrytblstart`). `DOSCALL1.DLL` never sees calls to these ordinals; and
+- **`DOSCALL1.DLL`'s own 555 LX exports.**
+
+Partition over 1..1117: **371** kernel-only, **550** DOSCALL1-only, **5** in
+both, **191** holes. The five overlaps are four LX forwarders (`#449`-`#452`, by
+construction) plus `#12 DOSPTRACE`, which has both a `DOSCALL1.DLL` body and a
+kernel gate - the kernel gate wins, and the body is unreachable through the
+ordinal.
+
+**The proof that `DOSCALLS` cannot mean "this file":** `DOSCALL1.DLL` exports 555
+ordinals (12..999) but **imports 298 distinct `DOSCALLS.#N`** (2..1117), and
+**271 of those it does not export** - 118 of them past its own highest export. A
+module cannot import from itself an ordinal it does not export. The same pattern
+holds for other importers: `PMMERGE.DLL` imports 197 and 49 are absent from
+DOSCALL1's table; `PMWP.DLL` imports 98 with 2 absent. The absent ones are
+exactly what a 16-bit program calls most - `#2 DOSCWAIT`, `#5 DOSEXIT`,
+`#34 DOSALLOCSEG`, `#59 DOSCLOSE`.
+
+**Consequence worth knowing:** which module answers an ordinal is not guessable
+from its number or its name. The VIO block `770`-`844`, for instance, is
+**entirely** DOSCALL1's - zero of those 75 appear in the kernel table - so those
+entry points are real code ending in `retf N`, not thin kernel-gate stubs.
+
+**Worked instances of the split, one from each side.** Both are reached only through another
+module's forwarder. Which side an ordinal falls on decides what can be recovered about it and
+how - and the pair below shows that answering the side question is a smaller thing than
+identifying the entry point, not the same thing:
+
+- **`#541` is kernel-side, and it is not known which kernel entry point it is.** It is reached
+  through `DOSCALL1.DLL`'s own ordinal 567, one of that DLL's five forwarder entries. The RE
+  corpus places it on the kernel side (tag 2, gate `0x272a`) and **declines to name it**: its
+  table's name column for this ordinal holds a caller list rather than a name, and the
+  `name_source` column reads `callers` - the corpus's explicit could-not-name bucket, which holds
+  12 of the tag-2 ordinals. So the kernel-vs-`DOSCALL1` question is answered for `#541` while the
+  identity question is not, and the two are genuinely separable. Nor does the byte count settle
+  it: several plausible candidate entry points in the kernel share the same `pre_sci` immediate,
+  so matching a count matches a family, not a function. Resolving `0x272a` through a live GDT
+  walk is the open route. Recorded as a negative result so it is not re-found and mistaken for
+  identification: third-party ordinal tables (the osfree wiki's `DOSCALLS` page, the 2ine import
+  map) do put a name on `#541`, but the wiki annotates its own entry "internal undocumented
+  function", osfree's `.def` files - which supply names for
+  139 other ordinals - do not carry it, and the 2ine map assigns `#541` two different names in
+  the same table. **[OBS-RE.]**
+- **`#649 DosCloseMessageFile` is `DOSCALL1`-side.** It is reached through `MSG.DLL` ordinal 9 -
+  the only one of that forwarder DLL's nine entries that leaves the contiguous `#383`-`#390`
+  block. Being `DOSCALL1`-resident it has **no** `pre_sci` stub, so the count comes off its own
+  exit instead: the entry at object 3 + `0x6f00` ends in a **bare `retf` with no immediate**, so
+  the callee pops nothing and the count is **0** - matching a decompiled signature of
+  `(void)`. **[DOC-IBM - `ORD_DOSCLOSEMESSAGEFILE EQU 9`, `bseord.inc:188`, at the end of the MSG
+  block whose 1-8 match `MSG.DLL`'s forwarder table entry for entry; and the *OS/2 Debugging
+  Handbook* System Ordinal Cross-Reference, `649 MSGCLOSEMESSAGEFILE`. OBS-RE - the shipped
+  `MSG.DLL` and `DOSCALL1.DLL` tables and the entry's own `retf`.]**
+
+**A name in the kernel's symbol table does not mean the ordinal routes there.** The kernel carries
+`pre_sci` entry stubs for symbols it does not answer the `DOSCALLS` ordinal for - the 16-bit
+named-pipe family `#399`-`#412` is the clean case: all fourteen are `DOSCALL1.DLL` object-4
+callgates, yet the kernel also has `DOSMAKENMPIPE`, `DOSQNMPHANDSTATE` and their siblings as
+`pre_sci` stubs whose counts agree. They agree because `DOSCALL1`'s entries are thin
+argument-forwarding shims onto the same workers, not because the ordinal reaches the kernel stub.
+Resolve which module answers an ordinal from the entry tables, not from a symbol-name match.
+**[OBS-RE.]**
+
+**Trap when using the Redbook's ordinal cross-reference.** The *OS/2 Debugging Handbook* carries
+both a System Ordinal Cross-Reference and an error-code table, and the two are keyed by numbers
+drawn from the same small range, so a bare numeric search hits both: `649` appears as
+`649 MSGCLOSEMESSAGEFILE` in the ordinal table and as `649 VLPT DEVICE BUSY` in the error table,
+and `541` as `541 PVW INVALID COUNTER BLK` in the error table with no ordinal entry at all. Read
+the surrounding table, not the matched line. **[DOC-IBM.]**
+
+Enumerated ordinal by ordinal in unpublished notes (v1, 2026-08-26), which also document a
+hardcoded `DOSCALL1` check in IBM's own loader used to select the kernel table.
 
 ## Exported entry points and forwarders
 
@@ -440,6 +618,23 @@ Two practical consequences:
 Establish these facts yourself with `lx_export.py` (`--exports` / `--imports`) rather than
 trusting the table; that is exactly what it is for, and it takes one command per module.
 
+**A forwarder entry and a resident-name entry are independent, so a forwarder table does not
+necessarily identify its own targets.** Both are optional per ordinal, and the shipped system
+DLLs use every combination. Measured across four of them:
+
+| Module | Forwarder entries | How many it also NAMES |
+|---|---|---|
+| `NAMPIPES.DLL` | 14 (ords 1-14 -> `DOSCALLS.#399`-`#412`) | **all 14** |
+| `SESMGR.DLL` | 40 | includes ord 34 `QHKEYBDHANDLE` -> `#856`, ord 35 `QHMOUSEHANDLE` -> `#857` |
+| `MSG.DLL` | 9 (ords 1-8 -> `#383`-`#390`, ord 9 -> `#649`) | **5 of 9** - including ord 9 |
+| `DOSCALL1.DLL` | 5 (`#449`-`#452`, plus ord 567 -> `#541`) | **none of the 5** |
+
+Where a forwarder is named, the name is the target's identity straight from IBM with no
+disassembly - `SESMGR`'s ordinals 34/35 identify `DOSCALLS.#856`/`#857` as the keyboard and mouse
+handle pair, each corroborating the other by adjacency. Where it is not, as with every one of
+`DOSCALL1.DLL`'s five, the target has to be identified some other way. **[OBS-RE - the shipped
+modules' entry and resident-name tables.]**
+
 ---
 
 ## Naming: `DosQueryProcAddr` versus `DosGetProcAddr` [DOC-IBM / DOC]
@@ -463,3 +658,365 @@ declare `DosGetProcAddr`. [DOC-IBM - `bsedos.h` (present: `DosQueryProcAddr`); a
   entry-table encoding of ordinary and forwarder exports.
 - `thunking.md` - how a resolved 16-bit entry point (see `DosQueryProcType`) is called from 32-bit
   code and vice-versa.
+
+
+---
+
+## The forwarder DLLs, and the complete shipped mapping `[DOC-IBM]`
+
+`VIOCALLS`, `KBDCALLS`, `MOUCALLS` and eleven siblings are **pure forwarders**:
+their exports are LX **type-4 entries** (`ENTRYFWD = 0x04`, 7-byte `FWDENT`,
+`FWD_ORDINAL 0x01`) that name a target ordinal in another module - for all
+fourteen, `DOSCALLS`. Nothing executes in them. An import of `VIOCALLS.#1` is an
+import of `DOSCALLS.#726`.
+
+**THE MAPPING APPEARS IN NO IBM HEADER, which is why it is transcribed here in
+full.** `bseord.h`'s public DOSCALLS block **publishes nothing in the 719-865
+band**, and that band is where the Vio/Kbd/Mou targets live. Surveyed 2026-08-26
+across all 12 in-tree `bseord.h` copies: 11 have a DOSCALLS section, only the two
+`toolkt21` copies stop at 646, nine publish names above it up to 999 - and **all
+eleven agree the 719-865 band is empty**. (`watcom19/watcom/h/os2/bseord.h` has
+no DOSCALLS section and is not evidence either way.) So the mapping exists only
+in the shipped binaries.
+
+**It is frozen.** These DLLs were shipped by IBM and their entry tables cannot
+change, so this table is read once and true thereafter. It was produced by a
+single scan of the fourteen DLLs in `\OS2\DLL` of an installed Warp 4.5 system on 2026-09-02,
+parsing each entry table directly; each file's md5 is recorded below so a
+different build can be told apart from this one rather than silently assumed
+identical (the target is a 25-year binary family).
+
+**241 forwarder entries across 14 DLLs.** `tools/forwarder_audit.py` still
+exists and re-derives this from the same binaries, but **this table is the
+record and the tool is the convenience** - the mapping is frozen, so it is read
+once and true thereafter, and a fact that lives only inside a script is a fact
+that has to be re-run to be known. Use the tool to re-check a *different* set of
+DLLs (a different fixpak, another OS/2 release); use this table to know what
+ours say.
+
+### ANSICALL.DLL  (3 forwarder entries)
+md5 `e6b18409e12afa88eb3b2e832dddef7c`, imports `DOSCALLS`
+
+| ord | name in this DLL | forwards to |
+|---|---|---|
+| 1 | ANSIINJECT | DOSCALLS.#848 |
+| 2 | ANSIKEYDEF | DOSCALLS.#849 |
+| 3 | ANSIINTERP | DOSCALLS.#850 |
+
+### BKSCALLS.DLL  (1 forwarder entries)
+md5 `5c5123cdf735ca188c216ab0e0e76096`, imports `DOSCALLS`
+
+| ord | name in this DLL | forwards to |
+|---|---|---|
+| 1 | BKSMAIN | DOSCALLS.#851 |
+
+### BMSCALLS.DLL  (1 forwarder entries)
+md5 `a06f9d863ee01e3abe9d79db581b5ce0`, imports `DOSCALLS`
+
+| ord | name in this DLL | forwards to |
+|---|---|---|
+| 1 | BMSMAIN | DOSCALLS.#852 |
+
+### BVSCALLS.DLL  (3 forwarder entries)
+md5 `2f40f09f0b59a2c3e3cdee1e3e84b756`, imports `DOSCALLS`
+
+| ord | name in this DLL | forwards to |
+|---|---|---|
+| 1 | BVSGETPTRDRAWNAME | DOSCALLS.#847 |
+| 3 | BVSMAIN | DOSCALLS.#845 |
+| 4 | BVSREDRAWSIZE | DOSCALLS.#846 |
+
+### DOSCALL1.DLL  (5 forwarder entries)
+md5 `a76530aa60c8e77db5001769d432783b`, imports `DOSCALLS, SESMGR`
+
+| ord | name in this DLL | forwards to |
+|---|---|---|
+| 449 | *(unnamed)* | DOSCALLS.#449 |
+| 450 | *(unnamed)* | DOSCALLS.#450 |
+| 451 | *(unnamed)* | DOSCALLS.#451 |
+| 452 | *(unnamed)* | DOSCALLS.#452 |
+| 567 | *(unnamed)* | DOSCALLS.#541 |
+
+### KBDCALLS.DLL  (25 forwarder entries)
+md5 `702c35d8fac0e6a17ce3cdd291c48db1`, imports `DOSCALLS`
+
+| ord | name in this DLL | forwards to |
+|---|---|---|
+| 1 | KBDSETCUSTXT | DOSCALLS.#745 |
+| 2 | *(unnamed)* | DOSCALLS.#746 |
+| 3 | KBDGETCP | DOSCALLS.#747 |
+| 4 | KBDCHARIN | DOSCALLS.#748 |
+| 5 | KBDSETCP | DOSCALLS.#749 |
+| 6 | KBDLOADINSTANCE | DOSCALLS.#750 |
+| 7 | KBDSYNCH | DOSCALLS.#751 |
+| 8 | KBDREGISTER | DOSCALLS.#752 |
+| 9 | KBDSTRINGIN | DOSCALLS.#753 |
+| 10 | KBDGETSTATUS | DOSCALLS.#754 |
+| 11 | KBDSETSTATUS | DOSCALLS.#755 |
+| 12 | KBDGETFOCUS | DOSCALLS.#756 |
+| 13 | KBDFLUSHBUFFER | DOSCALLS.#757 |
+| 14 | KBDXLATE | DOSCALLS.#758 |
+| 15 | KBDSWITCHFGND | DOSCALLS.#759 |
+| 16 | KBDSHELLINIT | DOSCALLS.#760 |
+| 17 | KBDCLOSE | DOSCALLS.#761 |
+| 18 | KBDFREEFOCUS | DOSCALLS.#762 |
+| 19 | KBDFREE | DOSCALLS.#763 |
+| 20 | KBDDEREGISTER | DOSCALLS.#764 |
+| 21 | KBDSETFGND | DOSCALLS.#765 |
+| 22 | KBDPEEK | DOSCALLS.#766 |
+| 23 | KBDOPEN | DOSCALLS.#767 |
+| 24 | KBDGETHWID | DOSCALLS.#768 |
+| 25 | *(unnamed)* | DOSCALLS.#769 |
+
+### MOUCALLS.DLL  (28 forwarder entries)
+md5 `c17ec2ea5e301ac04212e7c26c49f603`, imports `DOSCALLS`
+
+| ord | name in this DLL | forwards to |
+|---|---|---|
+| 1 | MOUGETPTRSHAPE | DOSCALLS.#719 |
+| 2 | MOUSETPTRSHAPE | DOSCALLS.#720 |
+| 3 | MOUGETNUMMICKEYS | DOSCALLS.#721 |
+| 4 | MOUGETHOTKEY | DOSCALLS.#853 |
+| 5 | *(unnamed)* | DOSCALLS.#723 |
+| 6 | MOUGETSCALEFACT | DOSCALLS.#724 |
+| 7 | MOUFLUSHQUE | DOSCALLS.#725 |
+| 8 | MOUGETNUMBUTTONS | DOSCALLS.#726 |
+| 9 | MOUCLOSE | DOSCALLS.#727 |
+| 10 | MOUSETHOTKEY | DOSCALLS.#854 |
+| 11 | MOUSETSCALEFACT | DOSCALLS.#729 |
+| 13 | MOUGETNUMQUEEL | DOSCALLS.#730 |
+| 14 | MOUDEREGISTER | DOSCALLS.#731 |
+| 15 | MOUGETEVENTMASK | DOSCALLS.#732 |
+| 16 | MOUSETEVENTMASK | DOSCALLS.#733 |
+| 17 | MOUOPEN | DOSCALLS.#734 |
+| 18 | MOUREMOVEPTR | DOSCALLS.#735 |
+| 19 | MOUGETPTRPOS | DOSCALLS.#736 |
+| 20 | MOUREADEVENTQUE | DOSCALLS.#737 |
+| 21 | MOUSETPTRPOS | DOSCALLS.#738 |
+| 22 | MOUGETDEVSTATUS | DOSCALLS.#739 |
+| 23 | MOUSYNCH | DOSCALLS.#740 |
+| 24 | MOUREGISTER | DOSCALLS.#741 |
+| 25 | MOUSETDEVSTATUS | DOSCALLS.#742 |
+| 26 | MOUDRAWPTR | DOSCALLS.#743 |
+| 27 | MOUINITREAL | DOSCALLS.#744 |
+| 29 | MOUGETTHRESHOLD | DOSCALLS.#722 |
+| 30 | MOUSETTHRESHOLD | DOSCALLS.#728 |
+
+### MSG.DLL  (9 forwarder entries)
+md5 `fb316c5a33d90490cf251da51ef3cce1`, imports `DOSCALLS`
+
+| ord | name in this DLL | forwards to |
+|---|---|---|
+| 1 | DOSPUTMESSAGE | DOSCALLS.#383 |
+| 2 | DOSTRUEGETMESSAGE | DOSCALLS.#384 |
+| 3 | DOSINSMESSAGE | DOSCALLS.#385 |
+| 4 | *(unnamed)* | DOSCALLS.#386 |
+| 5 | *(unnamed)* | DOSCALLS.#387 |
+| 6 | *(unnamed)* | DOSCALLS.#388 |
+| 7 | DOSIQUERYMESSAGECP | DOSCALLS.#389 |
+| 8 | *(unnamed)* | DOSCALLS.#390 |
+| 9 | DOSCLOSEMESSAGEFILE | DOSCALLS.#649 |
+
+### NAMPIPES.DLL  (14 forwarder entries)
+md5 `3465d1cfd955c62faaf20fecb92257a8`, imports `DOSCALLS`
+
+| ord | name in this DLL | forwards to |
+|---|---|---|
+| 1 | DOSMAKENMPIPE | DOSCALLS.#399 |
+| 2 | DOSQNMPIPEINFO | DOSCALLS.#400 |
+| 3 | DOSCONNECTNMPIPE | DOSCALLS.#401 |
+| 4 | DOSDISCONNECTNMPIPE | DOSCALLS.#402 |
+| 5 | DOSQNMPHANDSTATE | DOSCALLS.#403 |
+| 6 | DOSSETNMPHANDSTATE | DOSCALLS.#404 |
+| 7 | DOSPEEKNMPIPE | DOSCALLS.#405 |
+| 8 | DOSWAITNMPIPE | DOSCALLS.#406 |
+| 9 | DOSTRANSACTNMPIPE | DOSCALLS.#407 |
+| 10 | DOSCALLNMPIPE | DOSCALLS.#408 |
+| 11 | DOSRAWREADNMPIPE | DOSCALLS.#409 |
+| 12 | DOSRAWWRITENMPIPE | DOSCALLS.#410 |
+| 13 | DOSSETNMPIPESEM | DOSCALLS.#411 |
+| 14 | DOSQNMPIPESEMSTATE | DOSCALLS.#412 |
+
+### NLS.DLL  (8 forwarder entries)
+md5 `e9365d14d36dd27aee61660db4825fa6`, imports `DOSCALLS`
+
+| ord | name in this DLL | forwards to |
+|---|---|---|
+| 1 | DOSCASEMAP | DOSCALLS.#391 |
+| 2 | DOSGETCOLLATE | DOSCALLS.#392 |
+| 3 | DOSGETCTRYINFO | DOSCALLS.#393 |
+| 4 | DOSGETDBCSEV | DOSCALLS.#394 |
+| 5 | *(unnamed)* | DOSCALLS.#395 |
+| 6 | *(unnamed)* | DOSCALLS.#396 |
+| 7 | *(unnamed)* | DOSCALLS.#397 |
+| 8 | *(unnamed)* | DOSCALLS.#398 |
+
+### OS2CHAR.DLL  (13 forwarder entries)
+md5 `adb56f17db46e70e1bd493c3caeb2d31`, imports `DOSCALLS`
+
+| ord | name in this DLL | forwards to |
+|---|---|---|
+| 1 | *(unnamed)* | DOSCALLS.#682 |
+| 2 | *(unnamed)* | DOSCALLS.#683 |
+| 3 | *(unnamed)* | DOSCALLS.#684 |
+| 4 | *(unnamed)* | DOSCALLS.#685 |
+| 5 | *(unnamed)* | DOSCALLS.#858 |
+| 6 | *(unnamed)* | DOSCALLS.#859 |
+| 7 | *(unnamed)* | DOSCALLS.#860 |
+| 8 | *(unnamed)* | DOSCALLS.#862 |
+| 9 | *(unnamed)* | DOSCALLS.#864 |
+| 99 | *(unnamed)* | DOSCALLS.#861 |
+| 148 | *(unnamed)* | DOSCALLS.#865 |
+| 149 | *(unnamed)* | DOSCALLS.#863 |
+| 152 | *(unnamed)* | DOSCALLS.#718 |
+
+### QUECALLS.DLL  (16 forwarder entries)
+md5 `7a87f748dcdbb4d7a840e311b8c16d6e`, imports `DOSCALLS`
+
+| ord | name in this DLL | forwards to |
+|---|---|---|
+| 1 | DOSREADQUEUE | DOSCALLS.#674 |
+| 2 | DOSPURGEQUEUE | DOSCALLS.#675 |
+| 3 | DOSCLOSEQUEUE | DOSCALLS.#676 |
+| 4 | DOSQUERYQUEUE | DOSCALLS.#677 |
+| 5 | DOSPEEKQUEUE | DOSCALLS.#678 |
+| 6 | DOSWRITEQUEUE | DOSCALLS.#679 |
+| 7 | DOSOPENQUEUE | DOSCALLS.#680 |
+| 8 | DOSCREATEQUEUE | DOSCALLS.#681 |
+| 9 | *(unnamed)* | DOSCALLS.#661 |
+| 10 | *(unnamed)* | DOSCALLS.#662 |
+| 11 | *(unnamed)* | DOSCALLS.#663 |
+| 12 | *(unnamed)* | DOSCALLS.#664 |
+| 13 | *(unnamed)* | DOSCALLS.#665 |
+| 14 | *(unnamed)* | DOSCALLS.#666 |
+| 15 | *(unnamed)* | DOSCALLS.#667 |
+| 16 | *(unnamed)* | DOSCALLS.#668 |
+
+### SESMGR.DLL  (40 forwarder entries)
+md5 `7e9d0be080fdcac819de5b03f018a6a8`, imports `DOSCALLS`
+
+| ord | name in this DLL | forwards to |
+|---|---|---|
+| 1 | DOSSMSGDOPOPUP | DOSCALLS.#686 |
+| 2 | DOSSMSWITCH | DOSCALLS.#687 |
+| 3 | DOSSMSERVEAPPREQ | DOSCALLS.#688 |
+| 4 | DOSGETTIMES | DOSCALLS.#689 |
+| 5 | DOSSMSETTITLE | DOSCALLS.#690 |
+| 6 | DOSSCRUNLOCK | DOSCALLS.#691 |
+| 7 | DOSSMDOAPPREQ | DOSCALLS.#692 |
+| 8 | DOSSTOPSESSION | DOSCALLS.#693 |
+| 9 | DOSSELECTSESSION | DOSCALLS.#694 |
+| 10 | DOSSCRLOCK | DOSCALLS.#695 |
+| 11 | DOSSAVREDRAWWAIT | DOSCALLS.#696 |
+| 12 | DOSSAVREDRAWUNDO | DOSCALLS.#697 |
+| 13 | DOSSMSGENDPOPUP | DOSCALLS.#698 |
+| 14 | DOSSETSESSION | DOSCALLS.#699 |
+| 15 | DOSSETMNLOCKTIME | DOSCALLS.#700 |
+| 16 | DOSMODEUNDO | DOSCALLS.#701 |
+| 17 | DOSSTARTSESSION | DOSCALLS.#702 |
+| 18 | DOSSMGETSTATUS | DOSCALLS.#703 |
+| 19 | DOSMODEWAIT | DOSCALLS.#704 |
+| 20 | DOSSMTERMINATE | DOSCALLS.#705 |
+| 21 | DOSSMGETAPPREQ | DOSCALLS.#706 |
+| 23 | DOSSMINITIALIZE | DOSCALLS.#707 |
+| 24 | DOSSMSTART | DOSCALLS.#708 |
+| 25 | DOSSMPARENTSWITCH | DOSCALLS.#709 |
+| 26 | DOSSMPAUSE | DOSCALLS.#710 |
+| 27 | DOSSMHDEINIT | DOSCALLS.#711 |
+| 28 | DOSSMPMPRESENT | DOSCALLS.#712 |
+| 29 | DOSSMREGISTERDD | DOSCALLS.#713 |
+| 30 | DOSSMSYSINIT | DOSCALLS.#855 |
+| 31 | DOSSMNOTIFYDD | DOSCALLS.#714 |
+| 32 | DOSSMNOTIFYDD2 | DOSCALLS.#715 |
+| 33 | DOSSMOPENDD | DOSCALLS.#716 |
+| 34 | QHKEYBDHANDLE | DOSCALLS.#856 |
+| 35 | QHMOUSEHANDLE | DOSCALLS.#857 |
+| 36 | *(unnamed)* | DOSCALLS.#717 |
+| 37 | *(unnamed)* | DOSCALLS.#669 |
+| 38 | *(unnamed)* | DOSCALLS.#670 |
+| 39 | *(unnamed)* | DOSCALLS.#671 |
+| 40 | *(unnamed)* | DOSCALLS.#672 |
+| 41 | DOSREGISTERNOTIFICATION | DOSCALLS.#673 |
+
+### VIOCALLS.DLL  (75 forwarder entries)
+md5 `0a227adfb4d70da6e089f614c4f4c3d3`, imports `DOSCALLS`
+
+| ord | name in this DLL | forwards to |
+|---|---|---|
+| 1 | VIOENDPOPUP | DOSCALLS.#770 |
+| 2 | VIOGETPHYSBUF | DOSCALLS.#771 |
+| 3 | VIOGETANSI | DOSCALLS.#772 |
+| 4 | *(unnamed)* | DOSCALLS.#773 |
+| 5 | VIOSETANSI | DOSCALLS.#774 |
+| 6 | VIODEREGISTER | DOSCALLS.#775 |
+| 7 | VIOSCROLLUP | DOSCALLS.#776 |
+| 8 | VIOPRTSC | DOSCALLS.#777 |
+| 9 | VIOGETCURPOS | DOSCALLS.#778 |
+| 10 | VIOWRTCELLSTR | DOSCALLS.#779 |
+| 11 | VIOPOPUP | DOSCALLS.#780 |
+| 12 | VIOSCROLLRT | DOSCALLS.#781 |
+| 13 | VIOWRTCHARSTR | DOSCALLS.#782 |
+| 14 | *(unnamed)* | DOSCALLS.#783 |
+| 15 | VIOSETCURPOS | DOSCALLS.#784 |
+| 16 | *(unnamed)* | DOSCALLS.#785 |
+| 17 | *(unnamed)* | DOSCALLS.#786 |
+| 18 | VIOSCRUNLOCK | DOSCALLS.#787 |
+| 19 | VIOWRTTTY | DOSCALLS.#788 |
+| 20 | *(unnamed)* | DOSCALLS.#789 |
+| 21 | VIOGETMODE | DOSCALLS.#790 |
+| 22 | VIOSETMODE | DOSCALLS.#791 |
+| 23 | VIOSCRLOCK | DOSCALLS.#792 |
+| 24 | VIOREADCELLSTR | DOSCALLS.#793 |
+| 25 | VIOSAVREDRAWWAIT | DOSCALLS.#794 |
+| 26 | VIOWRTNATTR | DOSCALLS.#795 |
+| 27 | VIOGETCURTYPE | DOSCALLS.#796 |
+| 28 | VIOSAVREDRAWUNDO | DOSCALLS.#797 |
+| 29 | VIOGETFONT | DOSCALLS.#798 |
+| 30 | VIOREADCHARSTR | DOSCALLS.#799 |
+| 31 | VIOGETBUF | DOSCALLS.#800 |
+| 32 | VIOSETCURTYPE | DOSCALLS.#801 |
+| 33 | VIOSETFONT | DOSCALLS.#802 |
+| 34 | *(unnamed)* | DOSCALLS.#803 |
+| 35 | VIOMODEUNDO | DOSCALLS.#804 |
+| 36 | *(unnamed)* | DOSCALLS.#805 |
+| 37 | VIOMODEWAIT | DOSCALLS.#806 |
+| 38 | *(unnamed)* | DOSCALLS.#807 |
+| 40 | VIOGETCP | DOSCALLS.#808 |
+| 41 | *(unnamed)* | DOSCALLS.#809 |
+| 42 | VIOSETCP | DOSCALLS.#810 |
+| 43 | VIOSHOWBUF | DOSCALLS.#811 |
+| 44 | VIOSCROLLLF | DOSCALLS.#812 |
+| 45 | VIOREGISTER | DOSCALLS.#813 |
+| 46 | VIOGETCONFIG | DOSCALLS.#814 |
+| 47 | VIOSCROLLDN | DOSCALLS.#815 |
+| 48 | VIOWRTCHARSTRATT | DOSCALLS.#816 |
+| 49 | VIOGETSTATE | DOSCALLS.#817 |
+| 50 | VIOPRTSCTOGGLE | DOSCALLS.#818 |
+| 51 | VIOSETSTATE | DOSCALLS.#819 |
+| 52 | VIOWRTNCELL | DOSCALLS.#820 |
+| 53 | VIOWRTNCHAR | DOSCALLS.#821 |
+| 54 | *(unnamed)* | DOSCALLS.#822 |
+| 55 | VIOASSOCIATE | DOSCALLS.#823 |
+| 56 | VIOCREATEPS | DOSCALLS.#824 |
+| 57 | VIODELETESETID | DOSCALLS.#825 |
+| 58 | VIOGETDEVICECELLSIZE | DOSCALLS.#826 |
+| 59 | VIOGETORG | DOSCALLS.#827 |
+| 60 | VIOCREATELOGFONT | DOSCALLS.#828 |
+| 61 | VIODESTROYPS | DOSCALLS.#829 |
+| 62 | VIOQUERYSETIDS | DOSCALLS.#830 |
+| 63 | VIOSETORG | DOSCALLS.#831 |
+| 64 | VIOQUERYFONTS | DOSCALLS.#832 |
+| 65 | VIOSETDEVICECELLSIZE | DOSCALLS.#833 |
+| 66 | VIOSHOWPS | DOSCALLS.#834 |
+| 67 | VIOGETPSADDRESS | DOSCALLS.#835 |
+| 68 | *(unnamed)* | DOSCALLS.#836 |
+| 69 | *(unnamed)* | DOSCALLS.#837 |
+| 70 | VIOGLOBALREG | DOSCALLS.#838 |
+| 71 | XVIOSETCASTATE | DOSCALLS.#839 |
+| 72 | XVIOCHECKCHARTYPE | DOSCALLS.#840 |
+| 73 | XVIODESTROYCA | DOSCALLS.#841 |
+| 74 | XVIOCREATECA | DOSCALLS.#842 |
+| 75 | VIOCHECKCHARTYPE | DOSCALLS.#843 |
+| 76 | XVIOGETCASTATE | DOSCALLS.#844 |
+
+<!-- total forwarder entries: 241 -->

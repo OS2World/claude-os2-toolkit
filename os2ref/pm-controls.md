@@ -405,7 +405,7 @@ Styles"]:
 >
 > `PP_FOREGROUNDCOLOR` is `1`, `PP_BACKGROUNDCOLOR` is `3` [`pmwin.h:2512-2514`]; the
 > `*COLORINDEX` variants (`2`, `4`) take a palette index instead. Presentation parameters are the
-> general mechanism for per-control colour and font  -  see §"Presentation parameters" in
+> general mechanism for per-control colour and font  -  see section "Presentation parameters" in
 > `resources-and-dialogs.md`.
 
 ---

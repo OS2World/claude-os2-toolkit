@@ -89,6 +89,47 @@ emits, because a template may be passed to PM in memory as well as bound as a re
 that one can pass a pointer to 'the binary resource format' when calling `WinCreateDlg`" [DOC-IBM
 `pmwin.h:1867-1876`].
 
+### The binary resource file - `.RES` [DOC-IBM `pm5.txt` "Resource (.RES) File Specification"]
+
+The resource compiler (`RC`) compiles a resource script into a **binary resource file** (`.RES`),
+which it - or a later `rc file.res exe` - adds to an executable [DOC-IBM `pm5.txt` "Creating and
+Compiling a Resource File"]. Its format is a plain sequence, no header and no index:
+
+```
+(/TYPE NAME FLAGS SIZE BYTES/)+
+```
+
+| field | form |
+|---|---|
+| `TYPE` | a NUL-terminated string, **or** an ordinal: the byte `0xFF` then an `INT` - the `RT_*` value |
+| `NAME` | the same form as `TYPE`; there are no predefined names |
+| `FLAGS` | "an unsigned value containing the memory manager flags" - `NSMOVE` `0x0010`, `NSPURE` `0x0020`, `NSPRELOAD` `0x0040`, `NSDISCARD` `0x1000`, and the rest of the NE segment flags |
+| `SIZE` | a `LONG`: the number of bytes that follow |
+| `BYTES` | the resource itself |
+
+"Any number of resources can appear one after another in the .RES file." [DOC-IBM `pm5.txt`.]
+**The widths IBM's text does not state** - of the ordinal `INT` and of `FLAGS` - are **16 bits each**
+by observation [OBS]: a one-entry `RCDATA 1` script compiled by Open Watcom's resource compiler in
+its "Microsoft/IBM format" mode (`wrc -zm -bt=os2`; without `-zm` it writes a container of its own,
+not this format) gives `FF 09 00  FF 01 00  30 00  08 00 00 00` then the eight data bytes - type 9,
+name 1, flags `0x0030` (`NSMOVE|NSPURE`), size 8. IBM's own `RC.EXE` output was not captured.
+
+### `DosGetResource` / `DosFreeResource` - what is counted `[OBS]`
+
+Measured on WSeB 4.50 with an `RCDATA` resource of a DLL. `DosGetResource` returns the same address
+each time (a shared-arena object of its own) and counts the gets **per process** - measured with two
+processes: a child freeing the address its parent got, with no get of its own, gets 487 while the
+parent's own free still succeeds - and after two gets,
+two `DosFreeResource` calls return 0 - an address anywhere inside the resource counts as the resource
+- and a third returns **487** `ERROR_INVALID_ADDRESS`. A resource still held when its DLL is freed
+also gives 487 afterwards. `DosQueryProcAddr` on the caller's own EXE handle returns 6, and
+`DosGetResource` on it, for an EXE with no resources, 87. For an address that is no resource: `NULL`, a static or a stack address
+**87**; a code address, or one in no allocated object, **1**. The reference lists only 0 and 5 for
+`DosFreeResource` [DOC-IBM `cp1.txt`]; 5 was not seen. A `ppb` that cannot be written (`NULL`)
+is not an error return from `DosGetResource`: the caller ends with exception 5 (an access
+violation; `SYS1808`) - a bad module handle is still 126 first `[OBS]` (measured, WSeB 4.50
+revision 14.089 SMP).
+
 **Resource-script statements.** The `.RC` source names each resource with a statement whose
 keyword corresponds to the type - the dialog-template body is authored with a **`DIALOG`**
 statement [DOC-IBM - PM Reference, `pm2.txt:16163` WinLoadDlg Remarks, which refers to "the

@@ -13,16 +13,25 @@ reverse-engineering the real binaries, **[DOC]** other published reference.
 | 2 | Kernel initialization | the Information Segments + `DosQuerySysInfo` surface; the memory-arena / selector model |
 | 3 | DevHlp + kernel services | the driver-facing DevHlp API; the system clock |
 | 4-5 | DASD / volume bring-up | physical- and logical-disk IOCtl surface; VPB/DPB; FS-attach / FS-info queries |
+| 5a | The SYSINIT process (pid 1) *(added 2026-10-01)* | the process that runs Stages 6-10; DOSCALL1 loaded; the boot's first VIO/BVS call |
 | 6 | `DEVICE=` PDD loading | the `\DEV\` device namespace + per-device IOCtl categories |
 | 7 | `IFS=` filesystem install | the FS-attach / FS-control surface + the FSHelper contract an IFS runs against |
 | 8 | CONFIG.SYS processing | the process environment block + NLS (codepage / country) queries |
-| 9 | Session manager (not a boot stage - see Stage 9) | the session / screen-group model and its control APIs |
+| 9 | Session manager ~~init~~ [2026-10-01: not a stage before 10; see Stage 9] | the session / screen-group model and its control APIs |
 | 10 | `PROTSHELL=` launch | the protected-mode shell process |
 | 11 | Presentation Manager | the Win* / Gpi* API, the message queue, the GPI->GRE->driver draw path |
 | 12 | `RUNWORKPLACE=` | the shell reads an env var to launch the desktop program (default: the Workplace Shell) |
 
 Each stage gives the mechanism and the contract, with sources. Full per-structure detail lives in
 the subsystem references (`infoseg.md`, `kernel-services.md`, ...); this spine stays at contract level.
+
+> **The stage numbers are not an execution order (corrected 2026-10-01).** Read top to bottom, the
+> table puts `DEVICE=` (6) and `IFS=` (7) before CONFIG.SYS processing (8), which includes NLS. The
+> kernel's own ring-3 initialisation does the reverse for the environment and NLS: `syiInitEnvironment`,
+> `syicpInit` and `syicpActivate` all run **before** `syiInstallDeviceDrivers`, the step that loads
+> `DEVICE=` and `IFS=` [OBS-RE: the call order in `syiProcess`, Stage 5a; `config-and-environment.md`,
+> "The order, as the kernel's own initialisation calls it"]. The numbering groups contracts; Stage 5a
+> gives the order. Stage 9 is not a boot step at all (see its own correction).
 
 ---
 
@@ -33,6 +42,21 @@ the boot volume before the installable file systems are available. The observabl
 application later sees is the **boot drive** - `DosQuerySysInfo(QSV_BOOT_DRIVE)` (index 5; 1 = A,
 2 = B, ...) and the global InfoSeg field `SIS_BootDrv`. ([DOC-IBM] `QSV_BOOT_DRIVE == 5 /* 1=A, 2=B */`,
 IBM Toolkit 4.5 `bsedos.h:2504`; `SIS_BootDrv` at offset 0x24, IBM DDK `infoseg.h:85-87`.)
+
+[OBS-RE] A set of **implicit base device drivers is loaded that no CONFIG.SYS line ever names** -
+`RESOURCE.SYS`, `CLOCK01/02.SYS`, `SCREEN01/02.SYS`, `KBDBASE.SYS`, plus ten mandatory MVDM
+virtual device drivers (`vbios.sys`, `vdma.sys`, `vpic.sys`, `vflpy.sys`, `vtimer.sys`,
+`vlpt.sys`, `vkbd.sys`, `vdsk.sys`, `vcmos.sys`, `vnpx.sys`). The filename lists are present in
+the **OS2LDR image** as two parallel `01`/`02` variants (observed in both the UNI and SMP loader
+builds, at build-specific offsets); of the four base-driver filenames only `RESOURCE.SYS` also
+appears in the kernel, beside the BASEDEV extension-priority table.
+[INF] **Which component loads them, and what selects the `01` vs `02` variant, are not
+established** - `RESOURCE.SYS` is a `.SNP`-class BASEDEV (the earliest-loading class), which
+points at the kernel's own BASEDEV machinery, while the other three appear only in the loader;
+the `01`/`02` split is presumed ISA vs. ABIOS from the drivers' own source, not from any observed
+selection code. What *is* observed is the outcome: `SCREEN$`/`SCREENDD$`/`KBD$`/`CLOCK$`/`RESMGR$`
+exist before any CONFIG.SYS driver category is processed. Full breakdown, both candidate load
+models, and the boot-to-PM video ownership timeline -> `video-stack.md` section 1.
 
 ## Stage 2 - Kernel initialization
 
@@ -100,6 +124,78 @@ installer) depends on:
 
 IOCtl function tables and the VPB/DPB layouts -> `dasd-volume.md`.
 
+## Stage 5a - The SYSINIT process: ring-3 initialisation, pid 1
+
+*Added 2026-10-01. Earlier revisions of this file had no such stage, no DOSCALL1 load and no
+boot-time VIO; Stages 6-10 read as if the kernel performed them directly.*
+
+[DOC-IBM] Installable drivers are initialised inside a **process**: a PDD's strategy routine, at
+INIT, *"will run under the thread of the System Initialization Process at Ring 3, with I/O
+privilege"* (IBM *Physical Device Driver Reference*, "Physical Device Driver Initialization").
+[DOC-IBM] That process is **pid 1**: the `.m` memory-object listing in IBM's worked examples names
+`ptda 0001 *sysinit`, in the same listing as a running `pmshell.exe` PTDA (*The OS/2 Debugging
+Handbook*, Vol. I, SG24-4640, ch. 14 "Worked Examples"). So SYSINIT is still present once the shell
+is up. [INF] That it lasts for the life of the system: nothing read or observed ends it.
+
+[OBS-RE] Its main routine, `syiProcess`, performs Stages 6-10 itself, in this order (Warp 4.5
+kernel 14.104a, every routine named by IBM's `.sym`; the conditional halts to `syiAbortR3` and the
+far calls between the named routines are omitted, and offsets are build-keyed):
+
+```
+syiOpenFiles               ; CON as handles 0, 1, 2
+syiInitStdErrIntercept
+syiInitEnvironment         ; the environment            (Stage 8)
+syiCheckFileSys
+syicpInit                  ; COUNTRY= CODEPAGE= DEVINFO= (Stage 8, NLS)
+syiGetLoadableEntries      ; DOSCALL1.DLL loaded into SYSINIT
+syiDisplaySavedMessagesR3  ; first flush of queued boot messages
+syicpActivate              ; DosSetCp, VioSetCp, KbdSetCp (Stage 8, NLS)
+syiRegisterJITDebug
+syiBeginStdErrIntercept
+syiInstallDeviceDrivers    ; DEVICE= and IFS=           (Stages 6, 7)
+syiEndStdErrIntercept
+syiFATAutoCheck
+syiQuery16MBDevices
+syiDisplayMessageR3, syiDisplaySavedMessagesR3   ; second flush
+syiCloseFiles
+syiStartDOSMode
+syiBeginStdErrIntercept, syiStartAltF1Process, syiStartDaemonProcesses (RUN=, CALL=),
+  syiEndStdErrIntercept, syiTerminateStdErrIntercept
+syiStartShell              ; PROTSHELL=                 (Stage 10)
+syiInitStdErrIntercept, syiBeginStdErrIntercept, syi2StartDaemonProcesses,
+  syiEndStdErrIntercept, syiTerminateStdErrIntercept
+```
+
+What this stage establishes:
+
+- **DOSCALL1 is loaded into SYSINIT, before any `DEVICE=` driver.** [OBS-RE] `syiGetLoadableEntries`
+  resolves thirteen DOSCALL1 entry points by ordinal through an ordinary ring-3 `DosLoadModule` /
+  `DosGetProcAddr`, and the loader runs the library's initialisation for that load. DOSCALL1's
+  per-process initialisation therefore runs in SYSINIT, including its VIO process initialisation,
+  which builds the screen-group table with control blocks for screen groups 0 and 3 before any
+  session manager exists. A `DEVICE=` driver's INIT-time `DosWrite` runs DOSCALL1's code in this
+  process. Detail: `video-stack.md` section 4.2a.
+- **The boot's first VIO/BVS call is SYSINIT's, at the kernel's own boot message.** [OBS-RE] Until
+  DOSCALL1's entry points are resolved, boot messages are queued, not printed
+  (`config-and-environment.md`, "How a boot-time message is rendered"); `syiDisplaySavedMessagesR3`
+  is the first flush. [OBS] 2026-10-01, WSeB 4.50 Rev 14.089, HStrict SMP debug kernel with the SMP
+  `DOSCALL1.DLL`, one virtual CPU; two clean boots under the kernel debugger with hardware
+  breakpoints on `BVSDINIT`, `VIOWRTTTY`, `DOSPUTMESSAGE` and `BVSMAIN`, one with every removable
+  console-writing `DEVICE=` driver taken out and one with a `DEVICE=` driver that writes a banner at
+  INIT. In both, the first `BVSDINIT` entry comes from pid 1 in screen group 0, printing the kernel's
+  `Processors Initialized: 1` through `syiDisplayMessageR3` -> `DosPutMessage` -> `DosWrite` ->
+  `VioWrtTTY`, before the first `DEVICE=` driver's INIT. In the boot without a banner writer, that
+  write's `BVSDINIT` entries carry function codes `0x24`, `0x08`, `0x24`, `0x11`. What VIO does on
+  that first write, and which handler-load arm `BVSDINIT` takes: `video-stack.md` section 4.2a. Not
+  measured: a uniprocessor kernel, which may print no processor message.
+- [INF] **NLS activation follows that write.** `syicpActivate` runs after the first flush, so on the
+  boot above its `VioSetCp` is issued after VIO's first-write setup has run. The same boot shows one
+  further `0x24` entry with no `VioWrtTTY` before it, consistent with that `VioSetCp` reaching BVS;
+  its caller was not captured.
+- **The shell is SYSINIT's child.** [OBS-RE] `syiStartShell` runs after the stderr intercept has
+  ended, which re-duplicates handle 2 from handle 1 (CON). ~~[OBS] On the boots above, the next process,
+  pid 2, has parent pid 1 and runs in screen group 0.~~ [2026-10-01, corrected by a later capture `[OBS]` (kernel debugger, Warp Server for e-Business kernel 14.089 SMP, template CONFIG.SYS, PMSHELL and CMD.EXE as PROTSHELL, 2026-10-01): pid 2 is the JFS file-system check program (parent 1, screen group 0); the RUN= daemons follow with parent 0, screen group 0 and process type 4; the shell is pid 0x13 on both boots, parent 1, screen group 0, process type 0. The shell's pid depends on how many processes SYSINIT starts before it; what holds is that its parent is pid 1 and its screen group is 0.]
+
 ## Stage 6 - `DEVICE=` physical device drivers
 
 [DOC-IBM] Installable physical device drivers (PDDs) load. Each publishes a **`\DEV\` device name**
@@ -134,9 +230,10 @@ The FSD entry-point set (`FS_*`), the FSHelper surface, and the VPB volume model
 The kernel reads CONFIG.SYS in **multiple passes by category**, not line-by-line; `PROTSHELL=` runs
 last. (Period references give a scan order PSD -> BASEDEV -> DEVICE/IFS -> RUN/CALL -> general, but the
 placement of the `SET`/`LIBPATH` and NLS groups varies across sources - see
-`config-and-environment.md`. [DOC]) For the ring-3 phase the kernel's own code settles part of this:
-the environment and NLS are set up **before** `DEVICE=`/`IFS=` drivers are installed, so in execution
-this stage precedes Stages 6-7. See "Who runs Stages 6-10" below. It publishes:
+`config-and-environment.md`. [DOC]) [2026-10-01: for the ring-3 phase the kernel's own code settles
+it. The environment (`syiInitEnvironment`) and NLS (`syicpInit`, `syicpActivate`) run **before**
+`DEVICE=`/`IFS=` (`syiInstallDeviceDrivers`), so this stage precedes Stages 6-7 in execution;
+[OBS-RE], Stage 5a.] It publishes:
 - **The environment** - a flat, double-null-terminated block (`"NAME=value\0...\0\0"`, <= 64 KB) at
   `PIB.pib_pchenv`, walked by `DosScanEnv`. `LIBPATH=` / `BEGINLIBPATH=` / `ENDLIBPATH=` set their
   value with **no `SET` prefix**; every other variable requires `SET NAME=value`. Directive names
@@ -150,40 +247,14 @@ this stage precedes Stages 6-7. See "Who runs Stages 6-10" below. It publishes:
 
 The env-block format and NLS structures -> `config-and-environment.md`.
 
-### Who runs Stages 6-10: the SYSINIT process
+## Stage 9 - Session manager ~~initialization~~
 
-Installable drivers are initialised inside a **process**: IBM says a PDD's strategy routine at INIT
-time runs under the thread of the System Initialization Process, at ring 3 with I/O privilege
-[DOC-IBM *Physical Device Driver Reference*, "Physical Device Driver Initialization"]. That process
-is **pid 1**: IBM's worked examples list a PTDA `0001 *sysinit` alongside a running `pmshell.exe`,
-so it is still there once the shell is up [DOC-IBM *OS/2 Debugging Handbook* Vol. I, SG24-4640,
-"Worked Examples", the `.m` listing].
-
-Its main routine, `syiProcess`, performs the CONFIG.SYS work itself, in this order [OBS-RE - Warp
-4.5 UNI kernel 14.104a with its `.sym`; disassembled, from the directory holding both, with
-`lx_disasm.py os2krnl --sym os2krnl.sym --sym-name h_syiProcess --bits 16 --count 140`]:
-
-| Call | Does |
-|---|---|
-| `syiInitEnvironment` | the environment (Stage 8) |
-| `syicpInit` | `COUNTRY=` / `CODEPAGE=` / `DEVINFO=` (Stage 8, NLS) |
-| `syicpActivate` | activates the code pages (Stage 8, NLS) |
-| `syiInstallDeviceDrivers` | `DEVICE=` and `IFS=` (Stages 6-7) |
-| `syiStartShell` | `PROTSHELL=` (Stage 10) |
-
-`RUN=`/`CALL=` daemons start between the driver installation and the shell
-(`syiStartDaemonProcesses`), and a second daemon pass runs after it (`syi2StartDaemonProcesses`)
-[OBS-RE - same routine and command].
-
-## Stage 9 - Session manager
-
-**CORRECTED (Rule 1.7): not a boot stage, and not before Stage 10.** This heading used to read
-"Session manager initialization", placed before `PROTSHELL=`. No step of `syiProcess` sets up a
-session manager. The shell does that **after** `PROTSHELL=` starts it, by registering through
-`DosSMInitialize` (16-bit `DOSCALLS` ordinal 707 [DOC - osFree ordinal list]; `PMMERGE.DLL`
-imports `DOSCALLS.#707` [OBS-RE - `lx_resolve_imports.py --all-objects --kind import
---summary PMMERGE.DLL`, run in `\OS2\DLL` of an installed system]). The contract below is
-unchanged; only its place in the sequence was wrong.
+[2026-10-01: **not a boot stage, and not before Stage 10.** No step of SYSINIT's `syiProcess`
+initialises a session manager (Stage 5a). The session manager is set up by the shell **after**
+`PROTSHELL=` launches it: the shell registers through `DosSMInitialize`, which has no authorization
+gate (this file's own Stage 10 retraction), and `session-manager.md`, "The shell IS the session
+manager", gives the registration and serve sides [OBS-RE]. The contract listed below stands; only
+its position in the boot sequence was wrong.]
 
 [DOC-IBM] The protected-mode session manager governs **sessions** (screen groups). Contract:
 - `DosStartSession` (with the `STARTDATA` structure: program, session type, foreground / background,
@@ -205,9 +276,39 @@ The session model and control APIs -> `session-manager.md`.
 
 [DOC-IBM] The last CONFIG.SYS category, `PROTSHELL=`, names the protected-mode shell - normally
 `PMSHELL.EXE`, which brings up the Presentation Manager (Stage 11). `PIB.pib_ulpid` is its process
-id. The shell is a **child of the SYSINIT process** (parent pid 1), not pid 1 itself. On a measured
-SMP Warp 4.50 boot its pid was 0x13, after the file-system check program and the `RUN=` daemons
-[OBS-RE - kernel-debugger reads of the local InfoSeg].
+id.
+
+**`PROTSHELL=` is ~~OS/2's PID-1 equivalent~~ the system's lifetime supervisor process, and this is a contract, not a convention.** [2026-10-01: pid 1 on OS/2 is the SYSINIT process (Stage 5a), and `PROTSHELL=` runs as SYSINIT's child: ~~pid 2~~ parent pid 1, screen group 0 on the measured SMP boots `[OBS]` (kernel-debugger LIS reads, 2026-10-01); its own pid was 0x13, after the file-system check program (pid 2) and the RUN= daemons ~~(Warp Server for e-Business 14.104a SMP kernel)~~ [the measured kernel was 14.089 SMP; 14.104a is the build whose bytes were read]. The "PID-1" analogy was to a Unix init; what it was meant to convey, that the shell never exits and supervises the system, stands as written below.] An earlier
+version of this paragraph said the process is "launched like any other"; that is wrong in emphasis
+and misleads about three things at once.
+
+- **It does not exit.** In normal operation the shell process runs for the life of the system.
+  **Exiting it takes the system down: with `PROTSHELL=CMD.EXE`, typing `exit` at the prompt
+  reboots the machine.** `[OBS - author, from daily OS/2 use 1995-2006]` So "the shell
+  terminated" is not an event a running OS/2 has a state for; it is shutdown.
+- **It is a supervisor.** `[DOC-IBM]` *"It is the Shell process that is responsible for restarting
+  the Workplace process in the event that it is killed as a result of a trap"* - the Shell process
+  (`PROTSHELL=`) launches the Workplace process (`SET RUNWORKPLACE=`) and restarts it if it traps.
+  Both default to `PMSHELL.EXE`, which *"is designed to distinguish between being started as the
+  Shell process versus being started as the Workplace process."* (IBM Workplace Shell Programming
+  Guide, "The Workplace process".)
+- **It is NOT privileged, and session-manager authority has nothing to do with it.** ~~The kernel
+  gives it privileged identity ... authority cannot be self-granted by calling more APIs.~~
+  **RETRACTED the same day it was written** (observed): *"you can set `PROTSHELL=CMD.EXE` and at
+  the command prompt run `pmshell` and it works fine. The session manager contract isn't because it
+  was or wasn't specified in `PROTSHELL=`, it's because it registered itself with the session
+  manager APIs."* Confirmed by disassembly: `DOSSMINITIALIZE` (obj3+0x9ef0) has **no authorization
+  gate at all** - prologue straight to `cmp word [es:di],0x10` on the caller's own block, then it
+  writes `ShellPID` from the caller's LIS. Any process may call it; ~~the last valid caller becomes
+  the base shell~~ **only the first registration takes effect** [2026-10-12, Rule 1.7: a second
+  `DOSSMINITIALIZE` finds the session manager already initialised, skips the `ShellPID` store and
+  returns 0, so it does not take over `[OBS-RE]`]. See `session-manager.md`, "The shell IS the
+  session manager", and "What registration runs" for what the first registration does.
+
+So the PID-1 analogy is right about **lifecycle** and wrong about **authority**: `PROTSHELL=` is the
+process the kernel starts and whose exit ends the system, and that is all. It gets no session
+privilege the shell it launches could not have taken for itself - and on a `PROTSHELL=CMD.EXE`
+system, running `pmshell` by hand is exactly a process taking it.
 
 ## Stage 11 - Presentation Manager
 
@@ -274,7 +375,7 @@ documented, if needed, in their own references.
   source (Toolkit 4.5 `devhlp.inc` lists 117 entries up to number 131; a subset DDK `DEVHLP.INC` lists
   53), so the approximate "~103" is retained and its precise enumeration is left to `kernel-services.md`.
   The Stage 8 CONFIG.SYS category *scan order* remains [DOC] - period references disagree on the exact
-  order, so it stays deliberately hedged (see `config-and-environment.md`). For the ring-3 phase it
-  is no longer hedged: environment and NLS precede `DEVICE=`/`IFS=` (Stage 8, from `syiProcess`'s
-  call order). That correction, the Stage 9 correction and the SYSINIT section were added after
-  this ratification pass and are not covered by it.
+  order, so it stays deliberately hedged (see `config-and-environment.md`). [2026-10-01: for the
+  ring-3 phase it is no longer hedged: environment and NLS precede `DEVICE=`/`IFS=`, [OBS-RE] from
+  the kernel's `syiProcess` call order (Stage 5a). Not covered by this ratification: Stage 5a itself,
+  and the corrections to the overview and Stages 8-9, all added 2026-10-01.]

@@ -55,7 +55,7 @@ them. Findings go into the checkout via `os2-toolkit:contribute`.
 
 | Path | What |
 |---|---|
-| `os2ref/` | 43 pristine, project-agnostic OS/2 reference docs - internals, the full app API surface, and (in `klibc-runtime-glue.md`) how the kLIBC/LIBC Next POSIX compatibility layer maps Unix-style fd/`fork`/signal/`malloc`/socket semantics onto it, for porting GCC/Unix code. `os2ref/README.md` is the router. |
+| `os2ref/` | 45 pristine, project-agnostic OS/2 reference docs - internals, the full app API surface, and (in `klibc-runtime-glue.md`) how the kLIBC/LIBC Next POSIX compatibility layer maps Unix-style fd/`fork`/signal/`malloc`/socket semantics onto it, for porting GCC/Unix code. `os2ref/README.md` is the router. |
 | `skills/` | The plugin's skills: `os2-dev` (map + disciplines), `setup`, `contribute`. |
 | `bin/` | `PATH` shims for the tools and corpus scripts. |
 | `agents/` | `os2-reviewer`: a read-only adversarial reviewer that grounds itself in primary OS/2 sources before grading. |

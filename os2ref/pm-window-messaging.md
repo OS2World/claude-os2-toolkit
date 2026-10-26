@@ -68,6 +68,55 @@ typedef struct _MQINFO {   /* mqi */
 
 ---
 
+## 1a. `WinCreateMsgQueue` gates on the process type AND the session  `[OBS-RE]`
+
+Read out of a shipped `PMMERGE.DLL` (Warp 4.5) 2026-08-20, byte-exact. This is
+not documented anywhere in the Toolkit or the DDK, and it decides whether a
+process can have a message queue at all - so a system that reports process
+identity wrongly gets `WinCreateMsgQueue` failures with no obvious cause.
+
+PM keeps one system-wide word, `sgidInit` (IBM's own symbol), holding **the
+session id of the first process to create a message queue**. The first caller
+sets it; every later caller is checked against it.
+
+**First caller** (`sgidInit == 0`) - the only requirement is that it is not a
+detached process:
+
+```
+mov ecx,[ppibCurrent] / cmp dword [ecx+0x18],4   ; PIB.pib_ultype == PT_DETACHED?
+jnz ok
+  PMTrace("First CreateMsgQueue failed PT_D...") ; return 0
+ok:
+mov eax,[plisCurrent] / mov ax,[eax+8]           ; LINFOSEG.sgCurrent
+mov [sgidInit],ax                                ; remember this session
+```
+
+**Every later caller** (`PMMERGE` obj4 `+0x151064`):
+
+```
+mov ecx,[ppibCurrent]
+mov ecx,[ecx+0x18]        ; PIB.pib_ultype
+cmp ecx,3 / jz pass       ; PT_PM       -> EXEMPT
+cmp ecx,4 / jz pass       ; PT_DETACHED -> EXEMPT
+mov ecx,[plisCurrent]
+mov dx,[sgidInit]
+cmp [ecx+8],dx            ; LINFOSEG.sgCurrent vs sgidInit
+jz pass
+push 0x6000 / push 0x81051 / call SetErrorInfo
+xor eax,eax               ; return 0 - WinCreateMsgQueue FAILS
+```
+
+So, in words: **a process whose `PIB.pib_ultype` is neither `PT_PM` (3) nor
+`PT_DETACHED` (4) may create a message queue only if its
+`LINFOSEG.sgCurrent` equals the first message-queue creator's session.** A PM
+or detached process is exempt and may create one from any session.
+
+Both inputs are per-process values a host must get right independently:
+`pib_ultype` is `PIB+0x18`, and `sgCurrent` is `LINFOSEG+0x08` reached through
+PM's `plisCurrent`. Note the failure is silent to the caller beyond a `NULL`
+return plus error `0x81051` - nothing logs, and nothing says which of the two
+inputs was wrong.
+
 ## 2. Message parameters - `MPARAM`, `MRESULT`, and packing [DOC-IBM]
 
 A message carries two parameters and returns one result. All three are pointer-sized opaque
@@ -457,7 +506,7 @@ longer on top".
 
 ### Resize flicker: `CS_SIZEREDRAW` and clipping [OBS-RE]
 
-`CS_SIZEREDRAW` (§4) means "the whole window is redrawn on any size change". A client window whose
+`CS_SIZEREDRAW` (section 4) means "the whole window is redrawn on any size change". A client window whose
 children cover it has nothing of its own to redraw  -  its `WM_SIZE` just repositions them  -  so the
 flag buys only a full-area background repaint underneath the children on **every mouse-move of the
 sizing border**. That is the classic "flickering behind the child control" report.
@@ -465,7 +514,7 @@ sizing border**. That is the classic "flickering behind the child control" repor
 Two changes remove it: drop `CS_SIZEREDRAW`, and add clipping so the parent cannot paint over its
 children at all  -  `CS_CLIPCHILDREN` (`0x20000000`) as a class style, `WS_CLIPCHILDREN` (same value)
 as a window style. For a dialog, the window-style field of the `DIALOG` statement is where that
-goes; see `resources-and-dialogs.md` §"Resizable dialogs".
+goes; see `resources-and-dialogs.md` section "Resizable dialogs".
 
 ---
 
@@ -1131,9 +1180,64 @@ All PM handles are `LHANDLE` (`typedef unsigned long LHANDLE`, `os2def.h:76`):
 
 ---
 
+## 13. PM's internal fast mutexes [OBS-RE]
+
+Not an API - internal `PMMERGE.DLL` machinery, but it is load-bearing for anything that
+must supply `LINFOSEG.tidCurrent` faithfully. Read from a shipped Warp 4.5 `PMMERGE.DLL`
+(`PMREQUESTMUTEXSEM`, object 4 offset `0xFE008`); the peer is `PMRELEASEMUTEXSEM`.
+
+PM keeps a small array of fixed **32-byte** mutex entries in one of its shared data
+objects, indexed by an integer the caller passes:
+
+| Offset | Field |
+|---|---|
+| `+0x00` | *(unexamined)* |
+| `+0x08` | **owner token** - the word the lock-free `cmpxchg` operates on |
+| `+0x0c` | recursion count |
+| `+0x14` | identity stamped at acquire (same value as `+8`) |
+| `+0x1c` | **acquirer's return address** - names the PM function holding the lock |
+
+The acquire is lock-free and, critically, derives its identity **fresh on every call**:
+
+```asm
+mov   ecx,[<LINFOSEG ptr>]     ; PM caches the LINFOSEG far pointer in its data object
+movzx ecx,word [ecx+0x6]       ; LIS_TIDCurrent - re-read every call, never cached
+mov   eax,[esp+0x4]            ; mutex index
+shl   ecx,0x10                 ; tid << 16
+shl   eax,0x5                  ; index * 0x20
+lea   edx,[eax+<table base>]
+or    ecx,[<PID>]              ; | PID          -> token = (tid << 16) | pid
+cmp   [edx+0x8],ecx            ; already the owner?   <-- the recursion test
+jz    recursive
+lock cmpxchg [edx+0x8],ecx     ; else take it; failure -> the blocking path
+recursive:
+inc   dword [edx+0x0c]
+mov   eax,[esp] / mov [edx+0x1c],eax
+mov   [edx+0x14],ecx
+```
+
+Three consequences worth stating explicitly:
+
+- **The mutex is recursive, and recursion is detected only by comparing the stored owner
+  to a token rebuilt from `LIS_TIDCurrent`.** There is no separate thread-identity source.
+  A thread that observes a different `tidCurrent` on re-entry fails its own `cmp`, falls
+  into the contended path, and blocks on a lock it already holds.
+- **The token embeds the PID**, so these entries are meant to be contended across
+  processes, not merely across threads of one process.
+- On the contended path PM calls `DosVerifyPidTid` on the *owner's* pid/tid to decide
+  whether the owner is still alive and the lock can be stolen. A live-but-parked owner
+  therefore blocks the steal indefinitely - correctly, from PM's point of view.
+
+`+0x1c` is the useful debugging field: resolve it through `pmmerge.sym` to name the PM
+function that took the lock.
+
+---
+
 ## See also
 - `message-queue.md` - how a posted message reaches the queue and how a thread blocked in
   `WinGetMsg` is woken (the kernel wake path).
+- `infoseg.md` - `LINFOSEG.tidCurrent` (word at `+6`), the per-thread field section 13's
+  owner token is built from.
 - `pm-controls.md` - the predefined control window classes (`WC_BUTTON`, `WC_ENTRYFIELD`,
   `WC_CONTAINER`, ...) and their notification messages.
 - `resources-and-dialogs.md` - dialog templates, resource loading (`WinLoadDlg`/`WinDlgBox`), and

@@ -35,7 +35,7 @@ export KDB_DBGPORT=/tmp/dbgport_proxy      # or: kdb_cmd.py --socket /tmp/dbgpor
 With the passthrough running, a workload that had reliably triggered the freeze (an editor in a
 VIO window) stopped doing so. The mechanism is not established; nothing in IBM's debugger
 documentation involves modem-control lines (it specifies a three-wire null-modem cable), so this
-is most likely VirtualBox's pipe behaviour rather than the debugger's protocol. [OBS-RE - one VM,
+is most likely VirtualBox's pipe behaviour rather than the debugger's protocol. [OBS - one VM,
 observed repeatedly]
 
 ## Common flow

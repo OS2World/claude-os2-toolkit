@@ -158,12 +158,49 @@ of the file**; the remaining table offsets are relative to the **beginning of th
 zero-fill) - not pure zero-fill/invalid pages implied by an object's virtual size. [DOC-IBM - LX
 spec]
 
+**Where an EXE's stack comes from, and what happens with none** [OBS: WSeB 4.50 revision 14.089,
+2026-09-30; a one-segment 32-bit object whose entry is a `ret` and which has no `STACK`-class segment,
+linked by VisualAge C++ 3's `ILINK`, then run; and a survey of the 623 LX EXEs of an installed system]:
+- The stack is an object of the module: `e32_stackobj`/`e32_esp` name the object and the initial ESP
+  inside it. Every one of the 623 installed EXEs has one. The linker builds it from a `STACK`-class
+  segment (a compiler's C startup code supplies one) or from the `.DEF`'s `STACKSIZE`, which it places
+  in the automatic data object.
+- `e32_stacksize` is not what the loader goes by: 32 of the 623 carry 0 there and still have a stack
+  object (the survey read headers; none of the 32 was run). The commonest stack sizes are 32 KB (193
+  EXEs) and 64 KB (75).
+- With no `STACKSIZE` and no stack segment, `ILINK` warns `LNK4021: no stack segment` and still writes
+  the EXE, with `e32_stackobj` = 0 and `e32_stacksize` = 0. `STACKSIZE` given with no automatic data
+  segment draws `LNK4049: ignoring non-zero stack size` and the same header.
+- **The loader refuses such an EXE**: running it gives `SYS0189` - `ERROR_INVALID_STACKSEG` (189,
+  `bseerr.h`). Neither the linker nor the loader supplies a default stack.
+
+**What `DosExecPgm` returns for a module it cannot run** [OBS: WSeB 4.50 revision 14.089, 2026-09-30;
+a 32-bit LX program calling `DosExecPgm(EXEC_SYNC)` on each file below, the load-failure object name
+buffer read back]. `bseerr.h` names each code; `DosExecPgm`'s documented return list includes 190,
+191 and 192 but not 193, which it returns all the same:
+
+| the file | rc | the object buffer |
+|---|---|---|
+| a DLL (`DOSCALL1.DLL`) | 190 `ERROR_INVALID_MODULETYPE` | the file's name |
+| an EXE with module flag 0x2000 (not loadable) set | 192 `ERROR_EXE_MARKED_INVALID` | the file's name |
+| a text file named `.EXE` | 191 `ERROR_INVALID_EXE_SIGNATURE` | the file's name |
+| an `MZ` header whose new-header offset is 0 | 191 | the file's name |
+| an LX EXE with `e32_border` = 1 (big-endian) | 191 | the file's name |
+| an LX EXE cut off just past the header's first 0x30 bytes | 193 `ERROR_BAD_EXE_FORMAT` | the file's name |
+| an LX EXE whose object table offset points past the file | 193 | the file's name |
+| an LX EXE with `e32_cpu` = 0x40 (no such CPU) | 0 - it runs normally | empty |
+| an LX EXE cut to half its length (headers whole, pages missing) | 0 - it loads; the process ends with `codeTerminate` 1 and `codeResult` 14 | empty |
+
+The loader reads the header and the tables at load time and pages the rest in on demand, so a body
+cut short is not seen until a missing page is touched, and then as the program's fault.
+
 ### 2.3 Module flags (`e32_mflags`) [DOC-IBM]
 
 | Symbol | Value | Meaning |
 |---|---|---|
 | `E32LIBINIT` | 0x00000004 | per-process library initialization (else global) |
-| `E32NOINTFIX` | 0x00000010 | internal fixups have been applied/removed from the file |
+| `E32SYSDLL` | 0x00000008 | system DLL - **internal fixups discarded** (spec lists 0x08 as "reserved for system use") |
+| `E32NOINTFIX` | 0x00000010 | internal fixups have been **applied**; the records are **retained** in the file |
 | `E32NOEXTFIX` | 0x00000020 | external fixups have been applied |
 | `E32NOPMW` | 0x00000100 | incompatible with PM windowing |
 | `E32PMW` | 0x00000200 | compatible with PM windowing |
@@ -179,6 +216,73 @@ spec]
 | `E32NOTMPSAFE` | 0x00080000 | process is multiprocessor-unsafe (SMP builds) |
 
 [DOC-IBM - `exe386.h` module-flag defines; LX spec "MODULE FLAGS"]
+
+> **CORRECTED - an earlier revision of this section was wrong.** It claimed
+> *"`E32NOINTFIX` decides whether a module can be relocated ... the module can only be
+> loaded *there*"*, and called a preferred address a **hard requirement** for such a
+> module. That is not what the flag means and not what OS/2 does. The wrong claim is
+> kept here because it is a natural misreading - the symbol name reads as "no internal
+> fixups", which suggests the records are gone - and because the correction below is
+> the useful part.
+
+**`E32NOINTFIX` marks a preferred address, not an immovable one.** `[DOC-IBM]` The LX
+specification is explicit that the fixup records survive:
+
+> `00000010h` = Internal fixups for the module have been applied. The setting of this
+> bit in a Linear Executable Module indicates that each object of the module has a
+> **preferred** load address specified in the Object Table Reloc Base Addr. **If the
+> module's objects can not be loaded at these preferred addresses, then the relocation
+> records that have been retained in the file data will be applied.**
+
+So the flag is a preference plus an optimization: a loader that honours every preferred
+address may skip the internal fixups entirely, and one that cannot must apply the
+retained records - the module relocates either way. section 2.12 states the same thing from
+the other side, explaining that fixups are sorted so external and internal
+selector/pointer records precede internal non-selector records *"to allow the loader to
+ignore internal fixups if the loader is able to load all objects at the addresses
+specified in the object table."*
+
+**The genuinely immovable case is a different bit.** `E32SYSDLL` (0x08) is defined as
+*"System DLL, Internal Fixups discarded"* - with the records gone there is nothing left
+to apply. This is the condition the Object Table's own wording refers to (section 2.4): the
+Reloc Base Addr is *"the address the object is currently relocated to"*, and only *"if
+the internal relocation fixups for the module have been removed"* is it *"the address
+the object will be allocated at by the loader"*. For any other module the field is
+**informational** - a record of how the linker last laid the module out.
+
+> **Provenance corrected 2026-08-31 (Rule 1.7), third pass.** 2 claims here
+> were tagged `[OBS-RE]` and are now `[OBS]`. **No claim changed.** The
+> discriminator is the METHOD, not the subject: `[OBS-RE]` names RE of a binary
+> or the kernel debugger; `[OBS]` names a program run on real OS/2 whose result
+> was recorded. Both rest on ring-3 probes run on the machine, one of which
+> retains its capture. A ring-3 probe that *reads memory* is still a capture -
+> you re-verify it by running the probe again, not by reading bytes - and that
+> edge is what made these look like `[OBS-RE]`. Found on review: the earlier sweeps' keyword list did not match "observed on" or
+> "on a live", so these sat outside a bound that claimed to cover them.
+
+**What OS/2 actually does with the two cases** `[OBS]` - observed on OS/2 Warp 4.50
+by comparing every loaded module's live object addresses (via `DosQuerySysState`
+`QS_MTE`, and `DosQueryProcAddr` anchored on known exports) against the object table in
+the corresponding file on disk:
+
+- **A preferred address is honoured only for an `E32NOINTFIX` module.** Every one of 13
+  such objects kept its base. **Not one** relocatable DLL object was placed at its
+  preferred shared-arena base - they were allocated from the arena instead, even where
+  the preferred range was free. (The only relocatable objects found at their preferred
+  addresses were `.EXE` objects in the private arena, where nothing contends.)
+- **An already-loaded module is never displaced.** Loading further fixed-address modules
+  onto an occupied base moved nothing; the newcomer relocates.
+- **An address collision is never a load failure.** A fixed-address module whose
+  preferred base was occupied loaded successfully and was relocated, its retained
+  records applied - exactly as section 2.2 describes.
+- **Objects are placed independently.** One module's first object moved by 0x2AD0000
+  while another of its objects landed somewhere unrelated; there is no single
+  per-module delta.
+
+The practical consequence for a loader is the opposite of the retracted claim above:
+because relocatable modules never compete for a preferred base, a fixed-address module
+reliably gets its own without any reservation machinery - and when it cannot, it
+relocates like anything else.
 
 ### 2.4 Object Table (`struct o32_obj`) [DOC-IBM]
 
@@ -328,6 +432,19 @@ The per-entry variant follows the bundle header (`struct e32_entry`): each start
 [DOC-IBM - `exe386.h` `struct b32_bundle`/`struct e32_entry`, bundle-type and `E32*`/`FWD_ORDINAL`
 defines; LX spec "Entry Table"]
 
+**A bundle type of `GATE16` is overridden by the target object's Big/Default flag.**
+`[OBS-RE]` Shipped OS/2 DLLs contain entries whose bundle declares a 286 call gate while
+the target object is a 32-bit (Big) object - 16 such entries across the DLLs under
+`\OS2`, in `VIDEOCFG.DLL` and `COMETDLL.DLL`. OS/2 resolves these as ordinary flat 32-bit
+entries and does not build a call gate: five such entries in one module, all into the same
+Big object, each resolved to *object base + the entry's offset* and so all implied the
+same object base - which could not hold if a gate had been interposed. A loader that
+trusts the declared bundle type over the object's Big flag will build a 16-bit thunk where
+OS/2 builds none.
+
+The mirror case exists too and its handling is **not established**: 5 entries in the same
+corpus declare `ENTRY32` against a non-Big object.
+
 ### 2.10 Fixups - Fixup Page Table and Fixup Record Table [DOC-IBM]
 
 **Fixup Page Table.** Parallel to the Object Page Table, indexed by logical page number, with
@@ -391,6 +508,26 @@ When `NRCHAIN` is set, a `SRCOFF1..SRCOFFn` list of 2-byte source offsets follow
 crosses a page boundary appears as a separate record on each page (the second uses a negative
 offset). [DOC-IBM - `exe386.h` `struct r32_rlc` and `R32_*`/`NR*` defines; LX spec "Fixup Record
 Table"]
+
+**The loader does not validate a target offset against the target object's size, and does
+not reinterpret one.** `[OBS]` Two things follow, both observed on OS/2 Warp 4.50 by
+reading the resolved dword in a loaded module's memory and comparing it against the
+candidate values:
+
+- **An offset past the object's virtual size is applied as-is.** A shipped PM DLL contains
+  an internal fixup targeting an object at `+0x432FC` where that object's virtual size is
+  only `0xFFDC`; the corresponding memory holds exactly *target base + 0x432FC*. Treating
+  such a record as corrupt and skipping it silently leaves stale data at the source.
+- **A target offset with the high bit set is not a signed offset from the end of the
+  object.** A record with `trgoff = 0xFFFF36E0` against an object of size `0x23EE0`
+  resolved to *target base + 0xFFFF36E0* (i.e. base - 0x0C920), not to
+  *base + size - 0x0C920*. Nine such records exist across the shipped DLLs.
+
+A bulk appearance of out-of-range target offsets is, however, the characteristic signature
+of a **desynchronised fixup-record stream** - the records are variable-length with no
+length field and no re-anchoring, so one mis-sized field corrupts every later record on
+the page. Isolated occurrences are genuine data; a page full of them means the parse is
+wrong.
 
 ### 2.11 Import Module / Import Procedure Name Tables [DOC-IBM]
 
@@ -495,6 +632,17 @@ header; `ne_nrestab` is file-relative. [DOC-IBM - `newexe.h` `union choice`]
 
 `ne_flagsothers` bits: `NELONGNAMES` 0x01 (long-filename support), `NEWINISPROT` 0x02,
 `NEWINGETPROPFON` 0x04, `NEWLOAPPL` 0x80 (WLO application). [DOC-IBM - `newexe.h`]
+
+`NELONGNAMES` is the bit the linker sets for the module-definition statement `NEWFILES`. It is
+meaningful on program modules, not on DLLs (a DLL runs under its caller's bit), and it decides
+whether the process may pass non-8.3 names to the thirteen file-system functions IBM lists and
+see them from `DosFindFirst`/`DosFindNext` - the rule, the function list and the measured
+consequence are in `file-io.md` section 11. No LX-header equivalent is documented, and a 32-bit LX
+program is **not** subject to the long-name filter at all - measured [OBS]: it creates and queries
+non-8.3 names exactly like 8.3 ones, i.e. it behaves as if `NEWFILES` were always set. The filter
+is therefore a property of the 16-bit NE program model, not something an LX module carries or an LX
+process is subject to (see `file-io.md` section 11 for the measurement). [DOC-IBM - `cpgref` "Long File
+Names"; the 32-bit measurement is `[OBS]`, Warp 4.50]
 
 ### 3.2 NE module flags (`ne_flags`) [DOC-IBM]
 
@@ -619,6 +767,65 @@ offsets/counts from `newexe.h`]
 
 ---
 
+## 3.7 Absolute-value (`:ABS`) exports and how a fixup consumes one [DOC-IBM / OBS-RE / OBS]
+
+Not every export is a code or data *address*. Some are **absolute values** - a
+constant an importer wants at a fixup site, not a callable entry point. In
+DOSCALLS these include `DOSHUGESHIFT` (135) / `DOSHUGEINCR` (136), the
+huge-segment shift and increment (`memory-api.md`), `_DosFlatCS` (369) /
+`_DosFlatDS` (370), the flat code/data selector values, and `DOSIODELAYCNT`
+(427), the boot-computed I/O-delay loop count.
+
+- **How they are declared and referenced.** IBM's assembler declares the import
+  `EXTRN <name>:ABS` (or `EXTERNDEF <name> :ABS`) and reads it at a **value
+  site** - an immediate/offset, never a call: `mov ax, OFFSET DOSHUGEINCR`, or
+  `db 0B8h ; dw DOSIODELAYCNT` (`mov ax, imm16`). [DOC-IBM, DDK
+  `.../base/inc/iodelay.inc:201` `EXTRN DOSIODELAYCNT:ABS`,
+  `.../dev/parallel/par1284/parmisc.c` `mov ax, OFFSET DOSIODELAYCNT`,
+  `.../mme/wpddlib/iodelay.asm`, and `.../video/.../vga32/vgainc/extern.inc:486`
+  `EXTERNDEF DOSHUGEINCR :ABS`.] The linker emits an ordinary
+  import-by-ordinal fixup whose SOURCE type is a **value** type - `OFFSET16`
+  (NE `0x05` / LX `0x05`), `LOBYTE` (`0x00`), or a 16-bit `SEGMENT` fixup
+  (`0x02`); the DDK `.DEF` binds the name, e.g. `IMPORTS _DOSIODELAYCNT =
+  DOSCALLS.427`.
+- **How the loader resolves the ordinal to a value.** The DOSCALLS exporter is
+  the kernel's own entry table, not a normal module. A record there is *tagged*:
+  **tag 1 = "direct 16-bit value, selector 0"** and **tag 4 = "direct value via
+  an indirect table"**. Both resolve to a 16:16 pair of **`(selector = 0, offset
+  = value)`** - the value lands in the *offset* half. [OBS-RE,
+  `_ldrGetEntAddr` scheme C, `case 1: off = value; sel = 0;` / `case 4: off =
+  TBL[idx]; sel = 0;`, from the held kernel decompiles; the DOSCALLS export
+  table `dcm_entrytblstart` carries e.g. `01 03 00` at ordinal 135 = tag 1,
+  value 0x0003.]
+- **How the importer's fixup then writes it, per source type.** The fixup
+  applier takes the slice its source type names from that `(sel=0, off=value)`
+  pair.
+  - **`OFFSET16` writes the offset half - the value.** `[OBS]` measured on
+    OS/2 Warp Server for e-business (kernel 14.089_UNI): a 16-bit NE program
+    importing `DOSCALLS.136` through an `OFFSET16` fixup receives **8**.
+  - **A 16-bit `SEGMENT` fixup writes the selector half - 0.** `[OBS]` same
+    machine, same program, an added `SEG` reference to the same ordinal
+    receives **0**. This half is worth measuring rather than assuming: it is
+    not obvious that a constant referenced "as a segment" yields zero rather
+    than the constant, and binaries that do it exist - so a loader that writes
+    the *value* into a `SEGMENT` slot is diverging.
+  - **`LOBYTE` is NOT established.** The rule predicts the low byte of the
+    value, but the measurement could not be taken: a 16-bit NE program with a
+    `LOBYTE` fixup against an absolute export **dies on the same machine**
+    (`Bus error`), reproducibly, while the identical program without that one
+    reference runs to completion. Whether that is a loader limitation on
+    `LOBYTE`-against-imported-ordinal or a property of the particular
+    instruction encoding is **not distinguished by anything measured**, so no
+    `LOBYTE` behaviour is asserted here. Binaries using this shape do exist.
+- **Selector-valued exports are the reason the general far-pointer case is not
+  trivial.** `_DosFlatCS`/`_DosFlatDS` are absolute *selectors*: their value
+  belongs in the *selector* position when a program builds a segment reference
+  from them. Whether a **16:16 far-pointer (`PTR1616`, source `0x03`)** fixup to
+  such an export should place the value in the selector half (with the offset
+  from the fixup's additive) is not settled by the value/offset rule above and
+  is release/toolchain-specific; treat a `PTR1616` reference to an absolute
+  export as a case to verify, not to assume.
+
 ## 4. LX vs NE at a glance [DOC-IBM]
 
 | Aspect | LX (32-bit) | NE (16-bit) |
@@ -635,6 +842,88 @@ offsets/counts from `newexe.h`]
 | Compression | iterated data pages (`LX_Iter`) | iterated segments (`NSITER`) |
 | Forwarders | yes (bundle type 4) | no |
 
+## 5. How the system classifies an executable: `DosQueryAppType` [DOC-IBM / OBS-RE / OBS]
+
+**The API, [DOC-IBM]:** `DosQueryAppType(PSZ pszName, PULONG pFlags)` (32-bit, DOSCALLS 323)
+and `DosQAppType(PSZ, PUSHORT)` (16-bit, DOSCALLS 163; the DDK's 16-bit `bsedos16.h` gives the
+output as a USHORT). Flags are the `FAPPTYP_*` set in `bsedos.h`, including `WINDOWSREAL`
+0x200, `WINDOWSPROT` 0x400 and `WINDOWSPROT31` 0x1000, which the Control Program reference's
+page does not list.
+
+**Structure, [OBS-RE]:** one API over two binaries.
+- The 32-bit entry in DOSCALL1 unithunks into the 16-bit #163, also in DOSCALL1, which applies
+  the page's name rules.
+- #163 then calls DOSCALLS 202 (`DosIQAppType`, the kernel's `DOSIQAPPTYPE` ->
+  `_LDRQAppType`), which opens the name exactly as given.
+
+**#163's name rules, [OBS-RE]:**
+- A name longer than 0x103 characters -> 123.
+- A name that is empty, has `:` as its second character, or contains any `/` or `\` is used as
+  is. In a DBCS environment a lead byte skips the byte after it.
+- Otherwise `DosSearchPath(3, "PATH", ...)`: current directory first, then the `PATH` variable.
+- On rc 2 or 191 for a name with no extension (no `.` after the last separator), `.EXE` is
+  appended and the lookup repeats.
+- On 191 for an extension of `COM` in any case -> rc 0, flags 0x20.
+
+**The kernel's classification, [OBS-RE]:**
+- **Reads:** 0x40 bytes at offset 0. `LX`/`NE` means the new header is here; `MZ` (0x5A4D) or 0x5A4F
+  means it is at `e_lfanew`. Anything else is not an executable.
+- **Not an executable:** 0x20 if the name ends in exactly `.COM` or `.com`, else 191. A file
+  shorter than 0x40 bytes fails the first read instead: 193, or still 0x20 when its name ends in
+  exactly `.COM`/`.com` (the kernel marks it "not an executable" before that read).
+- **After an `MZ`:** `LE` -> 191; `PE` -> 0x5000 (0x5010 when the COFF characteristics have
+  `IMAGE_FILE_DLL`); any other or unreadable new header -> 0x20 (DOS).
+- **LX/NE errors:** an LX with a non-zero byte or word order or level, or an OS field other than
+  1, -> 191. Module flag 0x2000 (not loadable) -> 192. An unknown module-type field -> 193.
+- **Base flags:** module-flags bits 8-11 -> `FAPPTYP` bits 0-3 (type and `BOUND`). An NE
+  header is first rewritten into the LX shape, and there `ne_flags` keeps only 0xAB07.
+- **Windows NEs** (target OS 2 or 4): a WLO program -> type 3. It is WLO if the other-flags byte
+  (NE+0x37) has bit 7, or a module reference names `DOSCALLS`, `KERNEL_B`, `PMWIN`, `GDI_B` or
+  `USER_B`. Otherwise, from the expected Windows version (NE+0x3E minor, +0x3F major):
+  - 3.10 -> 0x1000;
+  - 3.0, or NE+0x37 bit 1 or 2 -> 0x400;
+  - below 3 -> 0x200;
+  - anything else -> 0x1000.
+
+  No `DLL` bit is added.
+- **Otherwise:**
+  - a library -> `DLL`;
+  - an LX PDD -> `DLL|PHYSDRV`;
+  - an LX VDD -> `DLL|VIRTDRV`;
+  - a protected-memory library -> `DLL` (**`PROTDLL` is never returned**);
+  - any LX -> `32BIT`.
+
+  **The type bits are kept for a DLL**, although the page says they are zeroed.
+- **Cache:** one (time, name-hash, flags) entry for the whole system, filled only by a
+  successful query. It answers without opening the file while `SIS_BigTime` is below the fill
+  time + 4. The hash sums each byte rotated left by 4,*i* mod 32, over the string the kernel
+  received. So it is case-sensitive, and names differing by a swap of characters *i* and *i*+8
+  collide.
+
+**What reaches the caller's output, [OBS-RE] then [OBS]:**
+- **The kernel classifies into its worker's own local** and returns it only on success.
+- **#202's worker stores a WORD on every return**, and it is 0 when the call failed.
+- **#163** writes the caller's word only through #202 and on its `.COM` path, so a failed `PATH`
+  search leaves the word as it was.
+- **The 32-bit entry** leaves #163's word in the low half and **always clears the high half**:
+  on success, on failure, and for a NULL name (rc 87).
+- **NULL pointers:** the 32-bit entry answers 87 for a NULL name or a NULL output. The 16-bit
+  #202 with a NULL output and #163 with a NULL name **trap**: neither tests the pointer.
+- **An empty name** through the 32-bit entry answers 2, leaving 0 in the output.
+
+**Measured, [OBS]:** WSeB 4.52 (Convenience Pak 2), 2026-09-30, through all three entries.
+- **Type bits kept:** an NE library of type 2 (`OS2\BOOT\TIMER0.SYS`) -> 0x0012.
+- **Drivers:** `OS2\SESDD32.SYS` -> 0x4050, `MMOS2\VAUDIO.SYS` -> 0x4090.
+- **Windows NEs:** the TCP/IP kit's `WPING.EXE` -> 0x0400, `WINSOCK.DLL` -> 0x1000.
+- **Header forms:** a written PE -> 0x5000, LE -> 191. A bound-flagged NE header at offset 0 ->
+  0x000A, a not-loadable LX header -> 192.
+- **Name rules:** `ATTRIB` and `ATTRIB.EXE` from elsewhere -> 0x0002 through #323, and 2 through
+  #202. A 64-byte text file named `.Com` -> 191 through #202 and 0x20 through #163. A directory
+  -> 5. `NOSUCHDIR\ATTRIB.EXE` (relative) -> 3. NULL `pFlags` or `pszName` through #323 -> 87.
+- **Cache:** within 4 s, a replaced file, a deleted file, a colliding name and a child process
+  all get the cached answer. A lower-case spelling misses, a failed query is not cached, and
+  the entry expires after 5 s.
+
 ---
 
 ## Sources
@@ -647,6 +936,12 @@ offsets/counts from `newexe.h`]
 - **[DOC-IBM]** IBM, *LX - Linear eXecutable Module Format Description* (June 3, 1992) - LX file
   layout, header-field semantics, object/page/entry/fixup grammar, iterated-data and register
   entry state.
+- **[DOC-IBM]** IBM OS/2 Toolkit `bsedos.h` (`FAPPTYP_*`); the DDK's 16-bit `bsedos16.h` (`DosQAppType`);
+  Control Program Guide and Reference, "DosQueryAppType".
+- **[OBS-RE]** section 5: the SMP kernel's `_LDRQAppType`, `_ldrOpenNewExe`, `_ldrOpenPath`,
+  `_ldrMungeFlags`, `_ldrExpandHeader` (with the `_mptbl` word table), `_ldrCheckForWLO`
+  (with `_ldrWLOTbl`) and `_ldrHashQATName`; DOSCALL1's #323 thunk and #163 body read at their
+  entry-table addresses, with imports resolved from the fixup table.
 - **[DOC]** *New Executable* format description (community transcription of the NE/segmented
   `.EXE` specification) - NE entry-table bundles, per-segment relocation target grammar, name
   and module-reference tables; cross-checked against `newexe.h`.

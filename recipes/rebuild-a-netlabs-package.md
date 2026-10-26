@@ -505,23 +505,23 @@ Rules that follow, both learned the hard way:
   thread blocked in a device call are the usual suspects. Try `kill`, then `kill -9`, and reach for
   the ring-0 tool only when both leave the process in `ps`.
 
-### 5a. A subset build breaks every system binary that imports the DLL — check the export table [OBS-RE]
+### 5a. A subset build breaks every system binary that imports the DLL - check the export table [OBS-RE]
 
 **Measured 2026-09-05, rebuilding `ncurses`'s `tinfo6.dll`.** A locally rebuilt DLL replaced the
-shipped one and every stock binary that imported it — `infocmp`, `tput`, `tic` — died with
+shipped one and every stock binary that imported it - `infocmp`, `tput`, `tic` - died with
 **`SYS2070`** (`Bus error`, rc 138), while the rebuilt DLL's *own* runtime paths worked fine.
 
 Cause: the rebuild produced a DLL with a **different export table** than the shipped one. OS/2
 binaries import a DLL **by ordinal**, and `emxexp`/the linker assign ordinals *sequentially in the
 order the object files are exported*. So dropping even one exported symbol shifts every later
 ordinal, and a stock caller's ordinal-N import (say `_nc_capcmp`) then binds to a *different*
-function in your DLL → it calls the wrong code with the wrong arguments → `SYS2070`. Here the
+function in your DLL -> it calls the wrong code with the wrong arguments -> `SYS2070`. Here the
 rebuild had been configured `--without-progs`, which dropped 31 terminfo-compiler functions from
 the library: **280 exports shipped, 249 in mine.** Nothing about the *code* was wrong; the export
 *surface* was a subset.
 
-`lx_export.py` names this failure in one line — "compare the importing
-side's requested ordinal against the exporting side's entry table" — and `SYS2070` in
+`lx_export.py` names this failure in one line - "compare the importing
+side's requested ordinal against the exporting side's entry table" - and `SYS2070` in
 `C:\POPUPLOG.OS2` resolves to `IMPORTER->DLL.symbol` at an offset, which points at the *expected*
 symbol, not the one actually run (a red herring that sent this investigation at codegen and the
 linker first; both were exonerated).
@@ -530,7 +530,7 @@ linker first; both were exonerated).
 
 - **Build the whole package to the spec's `%configure`.** A subset build (a stripped flag like
   `--without-progs`, a dropped source, a different `--with-termlib`/`--with-ticlib` split) is not a
-  smaller version of the DLL — it is an ABI-incompatible one.
+  smaller version of the DLL - it is an ABI-incompatible one.
 - **Gate a rebuilt DLL on its export table before trusting it**, by diffing against the shipped
   import library or the shipped DLL:
   ```sh
@@ -539,10 +539,10 @@ linker first; both were exonerated).
   # vs. your rebuild's, or use the toolkit tool on the DLLs directly:
   lx_export.py <your>.dll        # exports + imports + ordinals
   ```
-  Equal symbol *set* built from the same configure ⇒ equal ordinals. A different count ⇒ stop.
+  Equal symbol *set* built from the same configure => equal ordinals. A different count => stop.
 - This is why section 4's "load for one process only" is the safe way to *test* a rebuild: your own
   test program imports by name and tolerates a subset, so it passes while the system binaries that
-  import by ordinal would crash — the subset defect is invisible until you deploy over the system copy.
+  import by ordinal would crash - the subset defect is invisible until you deploy over the system copy.
 
 ## 5b. Package notes: rebuilding LIBC Next itself (`libc`)
 

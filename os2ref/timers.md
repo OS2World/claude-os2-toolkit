@@ -64,10 +64,15 @@ thread blocks on that semaphore and wakes each time the timer posts it.
 **Resolution.** The `msec` interval is a request; actual delivery is quantized to the system
 **clock tick**, so a timer cannot resolve finer than one tick and short intervals are rounded
 up to a tick boundary. The tick interval is queryable at run time - `SIS_ClkIntrvl` in the
-**global** InfoSeg (units of 0.0001 s) and `QSV_TIMER_INTERVAL` via `DosQuerySysInfo` (tenths of a
-millisecond); see `infoseg.md`. *(CORRECTED, Rule 1.7: this said **local** InfoSeg. `SIS_*` fields
-belong to `struct InfoSegGDT`, the system-wide GDT segment [DOC-IBM DDK `base/h/infoseg.h:36,47`];
-the per-process local InfoSeg has no timer field, and `infoseg.md` already had it right.)* The default tick is on the order of tens of milliseconds
+**global** InfoSeg (units of 0.0001 s) and `QSV_TIMER_INTERVAL` via `DosQuerySysInfo` (tenths
+of a millisecond); see `infoseg.md`. *(Corrected 2026-08-26, Rule 1.7: this said*
+***local*** *InfoSeg. `SIS_*` is `struct InfoSegGDT` - the GDT-addressed,
+system-wide segment - per [DOC-IBM DDK `base/h/infoseg.h`],
+and `infoseg.md` section "Global Information Segment" already had it right. The two
+are not interchangeable: the local InfoSeg is per-process and has no timer
+field at all.)* **The two are also not independent**: the QSV index is a *copy*
+of the GIS field, made once at boot - see `infoseg.md`, "How `DosQuerySysInfo`
+is answered". Measured on a Warp 4.5-family machine, both read **310**. The default tick is on the order of tens of milliseconds
 (nominally ~32 ms) [DOC], which is far coarser than the high-resolution timer below - code
 needing sub-tick precision uses `DosTmrQueryTime`, not the interval timers.
 
@@ -150,7 +155,10 @@ typedef DATETIME *PDATETIME;
 | 0x0A | `weekday` | `UCHAR` | Day of week |
 
 The structure is 11 bytes: four one-byte time fields, two one-byte date fields, a two-byte
-year, a signed two-byte `timezone`, and a one-byte `weekday`. On `DosGetDateTime` the kernel
+year, a signed two-byte `timezone`, and a one-byte `weekday`. (`bsedos.h` states no size and
+declares the structure outside any `pack(1)` block; the 11 bytes is the length the kernel copies
+from the caller [OBS-RE - `w_SetDateTime`]. The `/* 11 bytes */` comment in the listing above is
+ours, not the header's.) On `DosGetDateTime` the kernel
 fills all fields; `DosSetDateTime` sets the clock from the caller-supplied fields. The same
 per-tick time-of-day breakdown is mirrored in the local InfoSeg
 (`SIS_HrsTime`/`SIS_MinTime`/`SIS_SecTime`/`SIS_HunTime`); see `infoseg.md`, which a program
@@ -159,10 +167,8 @@ can read directly to avoid a call.
 **Field ranges and validation on set** [DOC - EDM2 "DosSetDateTime (OS/2 1.x)"]. `DosSetDateTime`
 validates the supplied fields and rejects an out-of-range or impossible value with
 `ERROR_TS_DATETIME` (327). The accepted ranges are `hours` 0-23, `minutes` 0-59, `seconds` 0-59,
-`hundredths` 0-99, `day` 1-31, `month` 1-12, `year` 1980-2079, and `timezone` -720...720 per the 1.x
-text. *(Qualified: on Warp Server for e-business 4.50, kernel revision 14.089, the accepted range is
-**-780...780**; 781 and -781 are refused with 327 [OBS-RE - measured with 32-bit and 16-bit
-probes]. Code that refuses offsets beyond 720 rejects real zones such as UTC+13.)* The day
+`hundredths` 0-99, `day` 1-31, `month` 1-12, `year` 1980-2079, and `timezone` ~~-720...720~~
+**-780...780** on Warp 4.5 (see *Measured behaviour* below; the 1.x text says +/-720). The day
 is additionally checked against the month and year - leap years included - so an impossible date
 (e.g. 30 February) is rejected. `weekday` is **ignored on set**: the kernel recomputes it from the
 date rather than trusting the caller's value.
@@ -172,6 +178,50 @@ date rather than trusting the caller's value.
 300, i.e. five hours earlier), **negative** when later (Western Europe / GMT+1 = -60). (This
 clarifies the sign of the "signed offset from GMT" noted in the field table above; the header
 type is unchanged.)
+
+### Measured behaviour - Warp Server for e-business 4.50, rev 14.089 (SMP) [OBS]
+
+Captured 2026-09-29 by paired 32-bit and 16-bit probes run on a real system; the kernel
+checks are those of `w_SetDateTime` [OBS-RE - kernel 14.104a SMP].
+
+- **Validation** matches the list above, with the timezone range **+/-780** (+/-781 -> 327). The
+  checks run in order: time fields, timezone, then the date against the 1980-2079 calendar
+  [OBS-RE - the order is the kernel's; single-field captures cannot show it].
+- **`weekday` is not validated** on set (9 is accepted) and a later `DosGetDateTime` returns
+  the computed day of week.
+- **A set `timezone` is kept**: a later `DosGetDateTime` returns it, and it appears in the
+  Global InfoSeg. The kernel writes it to the InfoSeg itself, before the clock-device write
+  [OBS-RE].
+- **Bad (NULL) `pdt` - the two widths are mirror images**, and 87 appears on neither page:
+
+  | | 32-bit | 16-bit |
+  |---|---|---|
+  | `DosGetDateTime` | caller ends by unhandled exception (`TC_EXCEPTION`) | returns 87 |
+  | `DosSetDateTime` | returns 87 | caller traps (`TC_TRAP`, #GP) |
+
+### The clock device (`CLOCK$`) [DOC-IBM - DDK I/O reference "Physical CLOCK$ Device Driver", driver source `clockdd.asm`/`clock01.asm`] + [OBS]
+
+The kernel sets the clock by writing a 6-byte record to the clock device; the device's
+driver maintains the InfoSeg date/time fields. The device is identified by the `DEV_CLOCK`
+attribute bit, not by its name. A program can also open it and read or write the record.
+
+| Byte | 0-1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| Field | days since 1-1-1980 (WORD) | minutes | hours | hundredths | seconds |
+
+| Operation | Result [OBS, rev 14.089] |
+|---|---|
+| read >= 6 bytes | 0, exactly 6 bytes returned |
+| read < 6 bytes | 30 `ERROR_READ_FAULT`, 0 bytes |
+| write exactly 6 bytes | 0 - **no validation of the record**: minutes = 99 is accepted and a later `DosGetDateTime` returns it |
+| write != 6 bytes | 29 `ERROR_WRITE_FAULT`, count 0 |
+| IOCtl category 13, function 60h (read CMOS; parameter `{BYTE addr; BYTE count}`) | 0; 87 if `addr` < 0Ah or > 3Fh or `count` = 0; 87 if either buffer is NULL or declared with length 0 (decided outside the driver, which never reads the declared lengths). A non-zero declared length is not compared against what is needed (a parameter length of 1 over a 2-byte buffer answers 0): the driver checks the memory, not the length. The address compare is **signed** [DOC-IBM - driver source; not measured], so 80h and above also answer 87 |
+| IOCtl category 13, function 61h (toggle a system-wide driver flag) | 0 |
+| any other IOCtl function, or another category | 22 `ERROR_BAD_COMMAND` |
+
+The driver's own header states that checking the record is the caller's job, and
+`DosSetDateTime` is that caller. A clock-device failure during `DosSetDateTime` halts the
+kernel rather than returning an error [OBS-RE].
 
 ## Error codes [DOC-IBM - `bseerr.h`]
 

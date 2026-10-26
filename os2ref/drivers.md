@@ -38,7 +38,7 @@ device-name-beats-file-name precedence rule is stated explicitly under "Name or 
 Reference (`00024`) but the **interrupt entry point** (`SDevInt`) in the C/ASM headers `devhdr.h` /
 `reqpkt.h` (`DDHDR.InterruptEP`) - same field, two IBM names. [DOC-IBM]
 
-### Which executable containers `DEVICE=` accepts [OBS-RE - measured]
+### Which executable containers `DEVICE=` accepts [OBS - measured]
 
 The same 16-bit character driver (header first in its data segment, Strategy entered with `ES:BX`,
 INIT returning status 0100h) was named on a `DEVICE=` line in four link forms, one boot each, on a
@@ -159,6 +159,17 @@ BIOS/INT13 shim. Per the DDK sample's own README: *"Snoopers are 16-bit ring 0 d
 Resource Manager's own driver-type taxonomy (`rmbase.h`) a snooper is `DRT_SERVICE` (7) /
 `DRS_SNOOPER` (1) - a distinct role from storage/char/block/network/video/audio driver types.
 
+> **CORRECTED 2026-08-27 (Rule 1.7) - the order above is wrong in three ways; kept marked because it was a period-source guess, not a typo.** Read byte-exact out of the kernel's own priority table, which `OrderBASEDEVs` walks: `DOSINITDATA` (object 8) offset `0x6cb`, flat `0x806cb`, in `os2krnld` SMP Astrict -
+>
+> ```
+> 2e 53 4e 50 2e 53 59 53 2e 42 49 44 2e 56 53 44 2e 54 53 44
+> 2e 41 44 44 2e 49 31 33 2e 46 4c 54 2e 44 4d 44 00
+> ".SNP.SYS.BID.VSD.TSD.ADD.I13.FLT.DMD\0"
+> ```
+>
+> So: **`.SYS` was missing entirely**, **`.PDD` is really `.TSD`** (which is the LADDR Type-Specific Driver this doc already describes elsewhere), and **`.ADD` comes before `.I13`, not after**. Real order: **`.SNP` -> `.SYS` -> `.BID` -> `.VSD` -> `.TSD` -> `.ADD` -> `.I13` -> `.FLT` -> `.DMD`**. `[OBS-RE]` Prior art, and the source of the `OrderBASEDEVs` linkage this claim rests on: unpublished notes (2026-08-06), which published the same bytes and the same three corrections, and traced `DS` there as `mov ax,0x47` -> LDT index 8 -> `DOSINITDATA`, caller chain `InitBaseDDs` -> `OrderBASEDEVs`. The bytes below were re-read independently for this change; the *linkage* is that doc's.
+
+
 **The boot-time detection sequence** (DDK sample README, verbatim mechanism description):
 1. On boot, the kernel loads the Resource Manager (`RESOURCE.SYS`).
 2. The Resource Manager reads a list file (the README calls it both `SNOOP.LST` and
@@ -224,10 +235,16 @@ BIOS-based fallback. `.I13` is separately confirmed against an IBM primary - `IB
 by name in an IBM support document (`warptips.doc`, IBM developer connection archive) which also
 confirms `.I13` genuinely is the INT13-BIOS disk-driver category.
 
-**The documented BASEDEV load order** places `.BID`/`.VSD`/`.TSD` between `.SYS` and `.ADD`
-(`.SYS .BID .VSD .TSD/.PDD .ADD .I13 .FLT .DMD`) - two independent online sources agree on the
-extension set and relative order but disagree on whether `.PDD`/`.TSD` sits in that slot and on
-`.I13`'s exact position relative to `.ADD`; not resolved this pass, flagged rather than guessed.
+**The BASEDEV load order** places `.BID`/`.VSD`/`.TSD` between `.SYS` and `.ADD`:
+**`.SNP .SYS .BID .VSD .TSD .ADD .I13 .FLT .DMD`**.
+
+> **RESOLVED 2026-08-27 (Rule 1.7).** This read `.SYS .BID .VSD .TSD/.PDD .ADD .I13 .FLT .DMD`
+> and said *"two independent online sources agree on the extension set and relative order but
+> disagree on whether `.PDD`/`.TSD` sits in that slot and on `.I13`'s exact position relative to
+> `.ADD`; not resolved this pass, flagged rather than guessed."* **Both questions are now settled
+> byte-exact against the kernel's own priority table** - `.TSD` occupies the slot (`.PDD` never
+> appears at all), and `.I13` follows `.ADD` rather than preceding it. See the correction block
+> earlier in this file for the raw bytes and the `OrderBASEDEVs` citation. `[OBS-RE]`
 By the Warp era essentially no shipping driver used `.BID`/`.VSD`/`.TSD` - the extension categories
 are recognized by the BASEDEV loader for backward compatibility, but real Warp-era hardware support
 ships as `.ADD`/`.DMD`/`.FLT`.

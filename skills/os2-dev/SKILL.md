@@ -28,7 +28,7 @@ installed copy - updates overwrite it.
 
 ## What the kit gives you
 
-- **`os2ref/`** - 43 pristine, source-tagged reference docs covering OS/2 internals **and** the full
+- **`os2ref/`** - 45 pristine, source-tagged reference docs covering OS/2 internals **and** the full
   application API surface (file/mem/process/IPC/exceptions, PM windows/controls/dialogs/GPI, VIO,
   clipboard/DDE, drag-drop, printing, profiles, EAs, SOM, WPS, REXX, sockets, MMPM/2 ...).
   **`os2ref/README.md` is the router** - it maps a task to the doc(s) to load. Load docs *on demand*,
