@@ -1,6 +1,6 @@
 ---
 name: os2-review
-description: Review an OS/2 change before trusting it - dispatch the os2-reviewer agent for a grounded, graded (A-F) review of work touching OS/2 semantics (Dos*/Win*/Vio* APIs and ordinals, PM, VIO, drivers, the LX/NE loader, kernel objects, thunks, the 16/32-bit ABI split), with the change set, claims, evidence, populations and grade history packaged for it. Use when asked to "review this OS/2 change", "grade this", "review before landing", "check this against IBM", or before committing anything that touches OS/2 behaviour. Has a cheap "--citations" mode that only reconciles cited sources against what they are cited for - run that first, and for "check my citations", "did I cite that right", or between graded rounds.
+description: Review an OS/2 change before trusting it - dispatch the os2-reviewer agent for a grounded, graded (A-F) review of work touching OS/2 semantics (Dos*/Win*/Vio* APIs and ordinals, PM, VIO, drivers, the LX/NE loader, kernel objects, thunks, the 16/32-bit ABI split), with the change set, claims, evidence, populations and grade history packaged for it. Use only when the user asks - "review this OS/2 change", "grade this", "check this against IBM" - never on your own initiative, and not as a step before every commit. The grade is advisory. Has a cheap "--citations" mode that only reconciles cited sources against what they are cited for - run that first, and for "check my citations", "did I cite that right", or between graded rounds.
 ---
 
 # Graded OS/2 review of this session's work
@@ -12,6 +12,11 @@ itself in primary OS/2 sources first** - the knowledge cache, this kit's
 books - because the model is not trained on OS/2 and would otherwise grade
 against its priors; and it returns a **letter grade**, not just a list of
 findings.
+
+**The review is advice, not a gate.** Run it when the user asks for one. Its grade
+tells the user how far to trust the work; it does not decide whether the work may
+land, and it is never a reason to start another round, or new work, that the user
+did not ask for.
 
 The reviewer starts blind: it cannot see this conversation. That is the point,
 and it is also why the dispatch has to carry everything. "Review the changes"
@@ -38,8 +43,8 @@ most expensive habit available here.
   It is also the right answer to "is this ready?" between rounds, and to a change
   too small to justify `full` at all.
 
-- **`full`** - grounding, the whole attack order, the letter grade. This is the
-  gate; nothing lands without one.
+- **`full`** - grounding, the whole attack order, findings and an advisory letter
+  grade.
 
 `/os2-toolkit:os2-review --citations [paths]` selects the cheap mode; the default
 is `full`.
@@ -164,9 +169,9 @@ exactly what a fresh reader catches.
   a flat grade buys exactly one round. If it says "no history supplied", the
   dispatch was missing field 4 and that is your error, not the reviewer's.
 - **Weigh findings by consequence class, not position.** `[BEHAVIOUR]` findings
-  are what block landing; `[BELIEF]` findings are real and expensive, but a pile
-  of them is usually one mechanism (see Trajectory) rather than N repairs;
-  `[COSMETIC]` never blocks anything. Report all three classes to the user with
+  matter most; `[BELIEF]` findings are real, but a pile of them is usually one
+  mechanism (see Trajectory) rather than N repairs; `[COSMETIC]` findings are
+  never worth a round of their own. Report all three classes to the user with
   their labels intact.
 - **Findings are hypotheses.** Verify each against the code (and a run, if cheap)
   before changing anything. Findings about the *evidence* outrank findings about
@@ -176,9 +181,11 @@ exactly what a fresh reader catches.
   premise you handed it.
 - **Report every finding to the user**, including the ones you disagree with,
   with your assessment. Never silently drop one.
-- **Report the grade and the rubric line that set it.** Below A-, nothing lands;
-  say what the reviewer said would raise it one step, and whether you intend to
-  do that or escalate.
+- **Report the grade, the rubric line that set it, and the one thing the
+  reviewer said is most wrong** - then stop and let the user decide. Do not start
+  another review round, or fix findings that widen the change, unless the user
+  asks. A finding whose remedy is `design` (new mechanism, new research) is a
+  question for the user, not a task.
 - **Out-of-scope findings get recorded and left**, not fixed in this change - the
   rubric's "fixed instead of recorded" is an automatic F. Where they belong
   depends on the project: its issue system, its plan, or `know absent` for a
