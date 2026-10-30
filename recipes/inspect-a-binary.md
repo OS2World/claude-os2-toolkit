@@ -16,7 +16,37 @@ ne_profile.py MODULE.dll                   # format ID + NE segment/reloc/import
 
 # symbol maps (.sym -> text), when you have them
 sym2map.py MODULE.sym
+lx_symmatch.py MODULE.dll MODULE.sym       # does this .SYM belong to THIS build? check before trusting names
+
+# naming what the code calls
+lx_resolve_imports.py --all-objects --summary MODULE.dll   # every fixup -> module+ordinal/name
+extract_omf_lib_ordinals.py os2386.lib DOSCALLS   # IBM's ordinal->name map, from an import library
+
+# 16-bit exports: how many argument bytes each entry pops
+lx_retf_argbytes.py MODULE.dll [--ord N]   # read from each 16-bit entry's own `retf N`
+
+# device drivers (LX or NE)
+driver_re.py all DRIVER.SYS                # device header, IOCtl table, imports, DevHlp call sites
+
+# a whole module, decompiled (needs Ghidra - tools/ghidra/README.md)
+lx_ghidra_run.sh <name> MODULE.dll [MODULE.sym]   # LX: every object, every function
+ne_ghidra_run.sh <name> MODULE.DLL [MODULE.sym]   # NE: 16-bit DLLs, drivers, IFSs
 ```
+
+Which tool answers which question:
+- **`lx_symmatch.py` before any `.SYM`.** `sym2map.py` never fails: a `.SYM` from a different build of
+  the same module resolves cleanly to wrong addresses, and the disassembly then starts mid-instruction.
+- **`lx_resolve_imports.py`** names the `call far 0:0` sites in `lx_disasm.py` output - the real target
+  is in the fixup records, not the code.
+- **`extract_omf_lib_ordinals.py`** turns a by-ordinal import into a name. Many system DLLs export by
+  ordinal only, so the names exist nowhere in the DLL; IBM's import library is the authored map.
+- **`lx_retf_argbytes.py`** for calling or reimplementing a 16-bit export: the argument block must be
+  popped exactly as the callee does. The entry table's parameter count is filled in for only a few
+  entries, and decompilers invent argument lists.
+- **`driver_re.py`** gathers facts about a shipped driver; its DevHlp census is a lead list, not a
+  specification.
+- **The Ghidra pipelines** decompile a whole module under its own symbol names where a matching `.SYM`
+  exists; they ship no output, only the procedure.
 
 Common uses:
 - **Confirm your `.def` worked** - does the module export the names/ordinals you intended, and import

@@ -37,13 +37,18 @@ installed copy - updates overwrite it.
   `lx_entry_parms.py`/`sym2map.py`/`ne_profile.py` (inspect any OS/2 LX/NE binary and its `.SYM`
   symbol file), `lx_resolve_imports.py` (name what a fixup points at), `lx_symmatch.py` (prove a
   `.SYM` belongs to an image before trusting its names), `extract_omf_lib_ordinals.py` (turn
-  `MODULE.#257` into `DosClose`), `driver_re.py` (dissect an LX/NE device driver),
+  `MODULE.#257` into `DosClose`), `lx_retf_argbytes.py` (how many argument bytes each 16-bit export
+  pops, read from its own `retf`), `driver_re.py` (dissect an LX/NE device driver),
+  `check-rc-ids.py` / `check-mnemonics.py` (a `.RC`'s missing dialog templates, colliding ids and
+  duplicate menu mnemonics - all invisible to the compiler; run after every `.RC` edit),
   `ddk_unpack.py` (merge the DDK's packages into one greppable tree), `know` (the knowledge cache -
   **search it before the books**, and record what you establish; see the `os2-toolkit:know` skill),
   `track` (work items on a Gitea tracker - see the `os2-toolkit:track` skill; durable facts go to
-  `know`, not to a ticket), `kdb_*.py` (drive the OS/2
-  kernel debugger over a VM serial pipe), and `tools/ghidra/` (headless LX and NE decompile
-  pipelines; see its README).
+  `know`, not to a ticket), `kdb_*.py` (drive the OS/2 kernel debugger over a VM serial pipe; start
+  `kdb_passthrough.py` first so the pipe always has a client), `lx_ghidra_run.sh` /
+  `ne_ghidra_run.sh` (headless Ghidra decompile of a whole LX or NE module; `tools/ghidra/README.md`),
+  and `os2-fetch-books` / `os2-fetch-edm2` / `os2-fetch-archive-book` (download IBM's redbooks and the
+  EDM2 wiki when the library lacks them - `sources.md`, `corpus/README.md`).
   **Run `ls ${CLAUDE_PLUGIN_ROOT}/bin` rather than trusting this list** - it lags, and a tool you don't know about
   is one you will reimplement badly. If a module ships a companion `.SYM`, `sym2map.py` reads it
   and `lx_disasm.py --sym` labels the disassembly; **never hand-roll a `.SYM` parser** (the format
@@ -57,10 +62,24 @@ installed copy - updates overwrite it.
   could not search - the defences against an encoding, case or wrong-volume miss reading as "IBM
   never documented this". `corpus/` holds the scripts that fetch and convert material; `ingest`
   uses them.
-- **`recipes/`** - how-tos for install/build/test/debug. Building a component that must behave the
-  way OS/2 does? `recipes/conformance-testing.md` is the method: measure each API family on real
-  OS/2, bake the values into a self-checking program, then build to it. **`sources.md`** - where to
-  download the IBM material and toolchain this kit does not ship.
+- **`recipes/`** - how-tos. **Open the one for what you are doing, when you start doing it:**
+
+  | Doing | Recipe |
+  |---|---|
+  | choosing between OpenWatcom and GCC/kLIBC | `choosing-a-toolchain.md` |
+  | installing OpenWatcom on Linux | `install-openwatcom.md` |
+  | building a PM or console app (and starting from `scaffolds/`) | `build-pm-app.md` |
+  | getting a test VM, moving files, driving the guest | `setup-test-vm.md` |
+  | debugging an app you built | `debugging-an-app.md` |
+  | reading or decompiling an LX/NE binary | `inspect-a-binary.md` |
+  | reading IBM's `.INF` books | `read-ibm-books.md` |
+  | porting a Windows program to PM | `porting-a-windows-app.md` |
+  | fixing a bug in an installed netlabs/RPM package | `rebuild-a-netlabs-package.md` |
+  | driver, IFS or kernel-level work | `setup-kdb-vm.md`, `kdb-reference.md` |
+  | building a component that must behave the way OS/2 does | `conformance-testing.md` |
+  | giving a project a work queue | `setup-a-tracker.md` |
+
+  **`sources.md`** - where to download the IBM material and toolchain this kit does not ship.
 - **`CONTRIBUTING.md`** - read this **before you write anything back into the kit**. The user may
   well ask you to ("update the toolkit with what I just found and cite the sources"): it is a
   reference *and* a finding aid that grows from real work. The rules that matter: contribute facts

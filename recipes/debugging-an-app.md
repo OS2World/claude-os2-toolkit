@@ -52,6 +52,12 @@ Pick the channel by **context** - the wrong one is silent or crashes:
 - **Normal code:** ordinary logging / `printf` to a file. Over a no-PTY SSH session a console app's
   stdout may not come back - **redirect to a file and read it back**
   (`ssh os2@vm 'app.exe >out.txt 2>&1'; ssh os2@vm 'cat out.txt'`), as in `setup-test-vm.md`.
+- **A PM app has no console - put the number in the title bar.** `WinSetWindowText` on the frame,
+  with the value you are reasoning about, then read it off a screenshot (`setup-test-vm.md`). When a
+  GUI behaviour is wrong, spend the first rebuild on this instrument, not on a fix: a guess costs the
+  same rebuild and is not conclusive. Delete the instrument afterwards, and any fix added on a theory
+  the measurement disproved. Worked examples: `porting-a-windows-app.md`, "Put a number in the title
+  bar".
 - **Inside an exception handler / signal-unsafe context:** do the minimum, async-signal-safely - no
   heavy `printf`/allocation; write a preformatted line to an already-open fd. (This channel-choice
   discipline is expanded in `../c-guide.md` section 8.)

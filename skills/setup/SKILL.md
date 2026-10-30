@@ -44,6 +44,10 @@ os2-lib check                      # anything missing, unconverted or unmounted
        2>/dev/null | grep -vi "wine\|node_modules" | head -20
   ```
   Offer `os2-toolkit:ingest` for what turns up. Never point the project at it by path.
+  If nothing turns up, the freely downloadable part can be fetched: `os2-fetch-books` (IBM's Warp
+  redbooks and Toolkit documentation), `os2-fetch-edm2` (the EDM2 wiki, community-grade) and
+  `os2-fetch-archive-book` (one book from archive.org) - `sources.md` and `corpus/README.md` say
+  what each gets. Offer them; do not start a large download unasked. Then `ingest` what arrives.
 
 The IBM books (`toolkit-books`, `ddk-books`) are **your verification substrate** -
 `recipes/read-ibm-books.md` for how to search them, and note the `grep -a` trap there (which applies
@@ -57,7 +61,9 @@ Every one of those is a fact on this disk, not a thing to estimate.
 ## Step 2 - Interview the user briefly
 
 Ask only what you need - and only what Step 1 did not already answer:
-1. **What are they building?** PM GUI app, console/VIO app, a DLL, a device driver/IFS, a port.
+1. **What are they building?** PM GUI app, console/VIO app, a DLL, a device driver/IFS, a port -
+   or a **compatible component**: their own version of an OS/2 system DLL, subsystem, driver or
+   shell that existing OS/2 programs must be able to use unchanged.
 2. **Toolchain?** Lay the choice out - do **not** pick for them. Summarize
    `recipes/choosing-a-toolchain.md`: **OpenWatcom** builds locally on Linux and cross-compiles (fast,
    can build drivers) but v1.9 isn't full C99; **GCC/kLIBC** runs inside OS/2 over SSH (more setup)
@@ -100,7 +106,15 @@ PATH.
 - **Tools:** the ones relevant to their work, by PATH name (always `inf2txt.sh` + `lx_disasm.py`;
   `kdb_*.py` only for driver/low-level work with a debug VM).
 - **Build + test:** the recipe by name (e.g. "the toolkit's `recipes/build-pm-app.md`") plus the
-  project's own target VM details.
+  project's own target VM details. Add the recipes that fit the project type, by name:
+  - a **port of a Windows program** -> `recipes/porting-a-windows-app.md`;
+  - a **driver, IFS or kernel-level** project -> `recipes/setup-kdb-vm.md` and
+    `recipes/kdb-reference.md`, and `kdb_passthrough.py` under **Tools**;
+  - a **compatible component** -> `recipes/conformance-testing.md`: "behaviour is decided by
+    measuring OS/2, one API family at a time - matrix, provoke on real OS/2, bake, then build to the
+    same program";
+  - anything with a `.RC` -> `check-rc-ids.py` and `check-mnemonics.py` under **Tools**, run after
+    every `.RC` edit.
 - **Material:** "OS/2 books, headers and other material are in the OS/2 library: find them with
   `os2-lib role <role>`, search with `os2-lib grep`, never by a path."
 - **Cards:** where this project's tracker is, and that `.os2track` records it - or plainly that it

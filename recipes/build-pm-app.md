@@ -8,6 +8,11 @@ An OS/2 app is: your `.c`/`.cpp` sources, an optional `.rc` resource script (men
 strings, icons - see `../os2ref/resources-and-dialogs.md`), and a `.def` module-definition file that
 sets the **application type** (see `../os2ref/calling-convention.md`, `../os2ref/module-dll.md`).
 
+**Start from a scaffold** rather than an empty file - each builds as it stands and checks every
+return value: `../scaffolds/hello-console/` (a VIO console app), `../scaffolds/hello-pm/` (a minimal
+PM window) and `../scaffolds/hello-pm-menu/` (a PM app with a menu, a modal dialog, an accelerator
+table and a `.RC`). Each has a `BUILD.md`.
+
 `.def` application type - this decides how OS/2 runs the process:
 ```
 NAME hello WINDOWAPI      ; a Presentation Manager (GUI) app
@@ -106,6 +111,17 @@ happen on the VM. Watch `BEGINLIBPATH`/`LIBPATH` so your app finds its DLLs at r
 `SYS2070`/`SYS1804` cause - see `../os2-app-dev-guide.md` "When something fails").
 
 ## After building - verify before you run
+If the app has a `.RC`, check it - the compiler, `wrc` and the linker all accept both of these
+defects silently:
+```sh
+check-rc-ids.py app.h app.rc *.c   # a dialog the code loads but the .RC lacks; colliding ids
+check-mnemonics.py app.rc          # two menu items claiming the same ~ mnemonic
+```
+Both exit non-zero on a finding, so they can gate the build; run them after **every** `.RC` edit. A
+missing `DLGTEMPLATE` shows up only at run time, as `WinLoadDlg` returning `NULLHANDLE` with
+`PMERR_RESOURCE_NOT_FOUND` (`0x8100A`) - and a whole-file rewrite of a `.RC` is exactly how a
+template goes missing (`../tools/rc-ids/README.md`).
+
 Inspect the module actually exports/imports what you intended (`inspect-a-binary.md`):
 ```sh
 lx_export.py hello.exe      # exports/imports of the LX binary

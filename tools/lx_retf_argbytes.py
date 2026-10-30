@@ -113,6 +113,9 @@ def main():
     i = 0
     while i < len(argv):
         a = argv[i]
+        if a in ('-h', '--help'):
+            print(__doc__)
+            sys.exit(0)
         if a.startswith('--'):
             name, eq, val = a.partition('=')
             if name not in TAKES_VALUE:
