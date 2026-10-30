@@ -25,6 +25,17 @@ static relocation at all, so they still decompile as a jump to 0:0 followed by
 failure - the real target, when it is knowable statically, is usually in the
 instruction immediately before the jump.
 
+Chained fixups (LX target flag 0x08) are applied first, by ../lx_fixchain.py:
+sym2map.py fills only zero slots and a chain head is never zero, so without this
+every chained reference exports with the next-link offset in its top 12 bits
+(about 230 shipped modules; see lx_fixchain.py). Then sym2map's zero-slot fill
+runs on top.
+
+Each object is zero-filled to its full virtual size. Reading stops at the last
+mapped page, and without the fill everything in the object's BSS gets no Ghidra
+memory, so the symbols there are dropped (CHKDSK32.DLL: 417 of 507 placed
+before, 506 after).
+
 Usage:
     lx_obj_export.py <lximage> <outdir>
 
@@ -44,6 +55,7 @@ TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, TOOLS_DIR)
 try:
     from sym2map import LXImage
+    from lx_fixchain import apply_chains
 except ImportError as e:
     sys.exit("lx_obj_export.py: cannot import sym2map.py (%s).\n"
              "  It is expected next to this script's parent directory, at\n"
@@ -66,8 +78,27 @@ def main():
         sys.exit("%s: not a readable LX image: %s" % (args.lximage, e))
 
     manifest = []
+    images = {o.num: bytearray(lx.object_bytes(o.num, fixups=False)) for o in lx.objects}
+    nrec, nslot, notes = apply_chains(args.lximage, images)
+    if nrec:
+        print("chained fixups: %d records, %d slots relocated" % (nrec, nslot))
+    for n in notes:
+        print("chained fixups: " + n, file=sys.stderr)
     for o in lx.objects:
-        data = lx.object_bytes(o.num, fixups=True)
+        data = images[o.num]
+        lx._apply_fixups(o, data)          # sym2map's zero-slot fill, on top of the chains
+        if len(data) < o.vsize:            # BSS: give it memory so its symbols get placed
+            data += bytes(o.vsize - len(data))
+        data = bytes(data)
+        # An executable object that is almost all zero bytes is a page-read failure, not
+        # code: Ghidra decodes it as `add [eax],al` over and over and reports every function
+        # "ok". Seen on an LX given an MZ stub without shifting its file-relative
+        # e32_datapage, so every ExePack2 page decompressed from the wrong offset (97.6% zero);
+        # across 158 good executable objects the worst was 67%, on a 6-byte object.
+        if o.is_exec and len(data) >= 4096 and data.count(0) > 0.9 * len(data):
+            sys.exit("obj %d: executable object is %.1f%% zero bytes - its pages were not read. "
+                     "If an MZ stub was prepended, were e32_datapage/e32_nrestab shifted by its "
+                     "size?" % (o.num, 100.0 * data.count(0) / len(data)))
         name = "obj%02d_%08x.bin" % (o.num, o.base)
         path = os.path.join(args.outdir, name)
         with open(path, "wb") as f:

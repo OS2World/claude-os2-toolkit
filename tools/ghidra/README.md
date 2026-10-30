@@ -69,6 +69,16 @@ tools/ghidra/lx_ghidra_run.sh MODULE /path/to/MODULE.DLL /path/to/MODULE.SYM
 
 Output lands in `./ghidra-out/MODULE/` (change the root with `--out`).
 
+Options worth knowing (`lx_ghidra_run.sh --help` for all):
+
+- `--extra-syms FILE` - extra `0xVVVVVVVV  name` lines (two spaces) for functions the `.SYM`
+  omits, such as statics or the 32-bit body behind a 16-bit entry stub, so they are seeded and
+  decompiled too. Keep the reason for each line in the file.
+- `--xrefs` - also write `xrefs_<bits>.tsv`, the cross-reference skeleton (`DumpXrefs.java`):
+  `F` function rows, `C` call edges, `D` data references, `S` every symbol. It is for building
+  function or data tables without scraping decompiled C, and comes from the same analysis run.
+- `--no-decompile` - skip decompiling; with `--xrefs`, the TSV alone, much faster.
+
 **1. Load every object at its real base.** An LX module is not one image: its
 objects - code and data, 16-bit and 32-bit - are separate segments that the
 loader places at separate, widely spaced flat addresses recorded in the
@@ -79,6 +89,29 @@ them with fixups applied, `make_blocks.py` picks the first executable object of
 a bitness as Ghidra's `-import` primary, and `LoadAllObjects.java` maps the
 rest as memory blocks at their true bases. Data objects are mapped too, so an
 access to a global decompiles against the bytes that are really there.
+
+Two things the export gets right that are easy to get wrong:
+
+- **Chained fixups.** In many modules a fixup record is only the head of a chain:
+  the other 32-bit slots on that page are linked through the object's own bytes,
+  each holding `(next_offset << 20) | target_offset`, and have no record of their
+  own (`../lx_fixchain.py` explains the loader's rule). `sym2map.py` fills only
+  zero slots, and a chain slot is never zero, so without chain handling every
+  chained reference keeps the link offset in its top 12 bits and decompiles as a
+  global at a nonsense address. `lx_obj_export.py` walks the chains first. About
+  230 modules of an installed Warp 4.5 carry chains; `lx_fixchain.py MODULE.DLL`
+  says whether yours does. Measured on CHKDSK32.DLL with its `.SYM`:
+
+  | | before | after |
+  |---|---|---|
+  | data references landing inside the module | 17 | 2,327 |
+  | data references pointing outside any object | 1,786 | 18 |
+  | data references to a named symbol | 3 | 1,499 |
+
+- **BSS.** Each object is zero-filled to its full virtual size. Reading stops at
+  the last page stored in the file, and without the fill the symbols living in
+  BSS have no memory to be placed on: on CHKDSK32.DLL, 417 of 507 symbols placed
+  before, 507 of 508 after (507 from the `.SYM` plus one `--extra-syms` line).
 
 One Ghidra program has exactly one Language, so the runner builds **one program
 per bitness present** in the module, and opposite-bitness *code* objects are
@@ -174,7 +207,7 @@ already consume. Four things are genuinely different:
 | `ne_ghidra_run.sh` | The same for an NE module, adding import stubs and a pinned DS. |
 | `lx_ghidra_reseed.sh` | Re-run one bitness pass with a function seeded at every ORPHAN address. |
 | `ghidra_env.sh` | Sourced helper: find `analyzeHeadless` from `GHIDRA_HOME` or `--ghidra`, or fail clearly. |
-| `lx_obj_export.py` | Export every LX object at its real base with fixups applied, plus `manifest.json`. |
+| `lx_obj_export.py` | Export every LX object at its real base with fixups (chained ones included) applied and BSS zero-filled, plus `manifest.json`. |
 | `ne_seg_export.py` | Export every NE segment with relocations applied, plus imports, relocs and header JSON. |
 | `make_blocks.py` | Turn a manifest into a block spec for one bitness; name the primary object to import. |
 | `lx_entry_table.py` | Resolve an LX module's own export ordinals to flat addresses and names. |
@@ -188,6 +221,7 @@ already consume. Four things are genuinely different:
 | `DisableNoreturnDiscovery.java` | preScript: disable the non-returning-function analyzers (they truncate 16-bit callers). |
 | `SetDataSeg.java` | preScript: pin DS (optionally ES) over all executable blocks before disassembly. |
 | `DecompileAll.java` | postScript: decompile every function to one `.c` each, skipping non-executable blocks. |
+| `DumpXrefs.java` | postScript (`--xrefs`): functions, call edges, data references and symbols as TSV. |
 | `DecompileByAddr.java` | postScript: decompile named addresses only, seeding a function where none exists. |
 | `FindCallers.java` | postScript: every reference to an address, with the containing function. |
 | `FindSym.java` | Print symbols whose name contains a substring, with addresses. |

@@ -20,6 +20,7 @@ lx_symmatch.py MODULE.dll MODULE.sym       # does this .SYM belong to THIS build
 
 # naming what the code calls
 lx_resolve_imports.py --all-objects --summary MODULE.dll   # every fixup -> module+ordinal/name
+lx_fixchain.py MODULE.dll                  # does it use chained fixups (slots with no record)?
 extract_omf_lib_ordinals.py os2386.lib DOSCALLS   # IBM's ordinal->name map, from an import library
 
 # 16-bit exports: how many argument bytes each entry pops
@@ -31,13 +32,22 @@ driver_re.py all DRIVER.SYS                # device header, IOCtl table, imports
 # a whole module, decompiled (needs Ghidra - tools/ghidra/README.md)
 lx_ghidra_run.sh <name> MODULE.dll [MODULE.sym]   # LX: every object, every function
 ne_ghidra_run.sh <name> MODULE.DLL [MODULE.sym]   # NE: 16-bit DLLs, drivers, IFSs
+lx_ghidra_run.sh --xrefs --no-decompile <name> MODULE.dll [MODULE.sym]   # call graph + data refs as TSV
+
+# install media and message files
+os2-unpack  extract FILE_ -d DIR           # IBM PACK files (names ending in _) - tools/unpack/README.md
+os2-unpack2 extract ARCHIVE -d DIR         # PACK2 archives (needs UNPACK2.EXE's tables)
+msgdump.py OSO001.MSG                      # every message in an MKMSGF .MSG file, by number
 ```
 
 Which tool answers which question:
 - **`lx_symmatch.py` before any `.SYM`.** `sym2map.py` never fails: a `.SYM` from a different build of
   the same module resolves cleanly to wrong addresses, and the disassembly then starts mid-instruction.
 - **`lx_resolve_imports.py`** names the `call far 0:0` sites in `lx_disasm.py` output - the real target
-  is in the fixup records, not the code.
+  is in the fixup records, not the code. In a module with **chained fixups** most internal pointers
+  have no record of their own - one record heads a chain threaded through the object bytes - so it
+  also lists those slots, marked `(chained)`; `lx_fixchain.py` counts them. A tool that applies only
+  the records leaves every chained pointer holding a link value, not an address.
 - **`extract_omf_lib_ordinals.py`** turns a by-ordinal import into a name. Many system DLLs export by
   ordinal only, so the names exist nowhere in the DLL; IBM's import library is the authored map.
 - **`lx_retf_argbytes.py`** for calling or reimplementing a 16-bit export: the argument block must be
@@ -46,7 +56,10 @@ Which tool answers which question:
 - **`driver_re.py`** gathers facts about a shipped driver; its DevHlp census is a lead list, not a
   specification.
 - **The Ghidra pipelines** decompile a whole module under its own symbol names where a matching `.SYM`
-  exists; they ship no output, only the procedure.
+  exists; they ship no output, only the procedure. `--xrefs` adds the call graph and data references
+  as TSV, for building tables without scraping decompiled C.
+- **`msgdump.py`** reads the system's message files - the text behind `SYS`-numbered errors and
+  `DosGetMessage` - without OS/2.
 
 Common uses:
 - **Confirm your `.def` worked** - does the module export the names/ordinals you intended, and import

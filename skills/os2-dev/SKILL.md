@@ -35,10 +35,13 @@ installed copy - updates overwrite it.
   not all at once.
 - **Tools, on your PATH** (plugin `bin/`, sources in `tools/`) - `inf2txt.sh` (read IBM `.INF` books as text; build once with `inf2txt-build`), `lx_disasm.py`/`lx_export.py`/
   `lx_entry_parms.py`/`sym2map.py`/`ne_profile.py` (inspect any OS/2 LX/NE binary and its `.SYM`
-  symbol file), `lx_resolve_imports.py` (name what a fixup points at), `lx_symmatch.py` (prove a
+  symbol file), `lx_resolve_imports.py` (name what a fixup points at, chained fixups included), `lx_fixchain.py`
+  (apply or count LX chained fixups), `lx_symmatch.py` (prove a
   `.SYM` belongs to an image before trusting its names), `extract_omf_lib_ordinals.py` (turn
   `MODULE.#257` into `DosClose`), `lx_retf_argbytes.py` (how many argument bytes each 16-bit export
-  pops, read from its own `retf`), `driver_re.py` (dissect an LX/NE device driver),
+  pops, read from its own `retf`), `driver_re.py` (dissect an LX/NE device driver), `msgdump.py`
+  (dump an MKMSGF `.MSG` message file), `os2-unpack` / `os2-unpack2` (expand IBM PACK/PACK2 files
+  from install media; `tools/unpack/README.md`),
   `check-rc-ids.py` / `check-mnemonics.py` (a `.RC`'s missing dialog templates, colliding ids and
   duplicate menu mnemonics - all invisible to the compiler; run after every `.RC` edit),
   `ddk_unpack.py` (merge the DDK's packages into one greppable tree), `know` (the knowledge cache -
@@ -46,7 +49,8 @@ installed copy - updates overwrite it.
   `track` (work items on a Gitea tracker - see the `os2-toolkit:track` skill; durable facts go to
   `know`, not to a ticket), `kdb_*.py` (drive the OS/2 kernel debugger over a VM serial pipe; start
   `kdb_passthrough.py` first so the pipe always has a client), `lx_ghidra_run.sh` /
-  `ne_ghidra_run.sh` (headless Ghidra decompile of a whole LX or NE module; `tools/ghidra/README.md`),
+  `ne_ghidra_run.sh` (headless Ghidra decompile of a whole LX or NE module, `--xrefs` for the call graph as TSV;
+  `tools/ghidra/README.md`),
   and `os2-fetch-books` / `os2-fetch-edm2` / `os2-fetch-archive-book` (download IBM's redbooks and the
   EDM2 wiki when the library lacks them - `sources.md`, `corpus/README.md`).
   **Run `ls ${CLAUDE_PLUGIN_ROOT}/bin` rather than trusting this list** - it lags, and a tool you don't know about

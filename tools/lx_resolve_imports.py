@@ -19,6 +19,13 @@ targets (ttype 0x00). This resolves all four target types:
                                      objN:0xOFFSET (plus the exported name,
                                      when the module publishes one)
 
+CHAINED FIXUPS. A record whose target flags carry 0x08 is only the HEAD of a
+chain: the other slots in that page are linked through the object's own bytes
+and have no record (lx_fixchain.py says how). Listing records alone undercounts
+internal references badly - CHKDSK32.DLL has 63 chain records covering 2645
+slots. Heads print as "(chain head)"; the slots after them are read from the
+image and print as "(chained)".
+
 THE WORKFLOW WITH lx_disasm.py.  Disassemble, find a call whose target is
 zero, take the flat address of the fixup SOURCE - the byte right after the
 call opcode, which is where the loader writes - and look that address up in
@@ -54,6 +61,9 @@ class LXFixups:
     """LX header tables needed to name a fixup target."""
 
     def __init__(self, path):
+        self.path = path
+        self.has_chains = False
+        self._followers = None
         with open(path, "rb") as f:
             self.data = f.read()
         d = self.data
@@ -293,6 +303,9 @@ class LXFixups:
 
                 if flagsb & 0x04:                           # additive fixup
                     p += 4 if flagsb & 0x20 else 2
+                if flagsb & 0x08 and ttype == 0x00:
+                    desc += " (chain head)"
+                    self.has_chains = True
 
                 if srclist:
                     for _ in range(cnt):
@@ -303,6 +316,25 @@ class LXFixups:
                 else:
                     off = single & 0xFFFF
                     yield (page_off + off, base + page_off + off, stype, ttype, desc)
+
+        if self.has_chains:
+            for objnum, off, tobj, toff in self.chain_followers().get(target_obj, []):
+                yield (off, base + off, 0x07, 0x00,
+                       "internal obj%d+0x%x (chained)" % (tobj, toff))
+
+    def chain_followers(self):
+        """objnum -> [(objnum, obj_off, target_obj, target_off)] for every chained
+        slot after a head. Reads the object images, so it runs only for a module
+        that has chain records."""
+        if self._followers is None:
+            from sym2map import LXImage
+            from lx_fixchain import chain_slots
+            img = LXImage(self.path)
+            images = {o.num: bytearray(img.object_bytes(o.num)) for o in img.objects}
+            self._followers = {}
+            for slot in chain_slots(self.path, images, heads=False):
+                self._followers.setdefault(slot[0], []).append(slot)
+        return self._followers
 
 
 TTYPE_KIND = {0: "internal", 1: "import", 2: "import", 3: "own"}

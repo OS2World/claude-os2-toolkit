@@ -3,7 +3,8 @@
 # headless Ghidra.
 #
 # What it does, in order:
-#   1. export every LX object at its real base, fixups applied (lx_obj_export.py)
+#   1. export every LX object at its real base, fixups applied - chained ones
+#      too - and zero-filled to its full size (lx_obj_export.py)
 #   2. resolve a matching .SYM to flat VAs (sym2map.py --format flat), if given
 #   3. per bitness present in the module:
 #        - pick the first executable object of that bitness as the -import
@@ -27,6 +28,15 @@
 #   --out DIR      output root (default: ./ghidra-out)
 #   --ghidra PATH  Ghidra directory or analyzeHeadless (default: $GHIDRA_HOME)
 #   --timeout SEC  auto-analysis timeout per program (default: 1800)
+#   --extra-syms FILE  extra "0xVVVVVVVV  name" lines (two spaces) for functions the
+#                  .SYM omits - statics, a 16->32 entry thunk's 32-bit body - so they
+#                  are seeded and decompiled too. Works without a .SYM as well. Keep
+#                  the reason for each line wherever the file is kept.
+#   --xrefs        also write the cross-reference skeleton, <out>/<name>/xrefs_<bits>.tsv
+#                  (DumpXrefs.java): functions, call edges, data references and every
+#                  symbol, as TSV - for building function or data tables without
+#                  scraping decompiled C. Same analysis run, no second pass.
+#   --no-decompile skip DecompileAll (use with --xrefs for the TSV alone; much faster)
 #
 # SYMBOLS COME FROM A MATCHING .SYM, OR NOT AT ALL.  This script does not
 # judge whether the .SYM you hand it belongs to the same build as the binary -
@@ -43,6 +53,9 @@ TOOLS="$(cd "$HERE/.." && pwd)"
 . "$HERE/ghidra_env.sh"
 
 OUTROOT="./ghidra-out"
+EXTRA_SYMS=""
+XREFS=0
+DECOMPILE=1
 GHIDRA_ARG=""
 TIMEOUT=1800
 usage() {
@@ -54,6 +67,9 @@ while [ $# -gt 0 ]; do
         --out)     OUTROOT="${2:?--out needs a directory}"; shift 2 ;;
         --ghidra)  GHIDRA_ARG="${2:?--ghidra needs a path}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?--timeout needs seconds}"; shift 2 ;;
+        --extra-syms) EXTRA_SYMS="${2:?--extra-syms needs a file}"; shift 2 ;;
+        --xrefs)   XREFS=1; shift ;;
+        --no-decompile) DECOMPILE=0; shift ;;
         -h|--help) usage 0 ;;
         --) shift; break ;;
         -*) echo "unknown option: $1" >&2; usage 2 ;;
@@ -65,6 +81,7 @@ NAME="${1:-}"; LXIMAGE="${2:-}"; SYMFILE="${3:-}"
 [ -n "$NAME" ] && [ -n "$LXIMAGE" ] || usage 2
 [ -f "$LXIMAGE" ] || { echo "error: no such LX image: $LXIMAGE" >&2; exit 2; }
 [ -z "$SYMFILE" ] || [ -f "$SYMFILE" ] || { echo "error: no such symbol file: $SYMFILE" >&2; exit 2; }
+[ -z "$EXTRA_SYMS" ] || [ -f "$EXTRA_SYMS" ] || { echo "error: no such extra-symbols file: $EXTRA_SYMS" >&2; exit 2; }
 
 GHIDRA="$(ghidra_headless "$GHIDRA_ARG")" || exit 1
 SYM2MAP="$TOOLS/sym2map.py"
@@ -97,6 +114,13 @@ if [ -n "$SYMFILE" ]; then
         log "WARNING: Continuing WITHOUT names."
         SYMVA=""
     fi
+fi
+if [ -n "$EXTRA_SYMS" ]; then
+    [ -n "$SYMVA" ] || { SYMVA="$OUT/symbols_va.txt"; : > "$SYMVA"; }
+    n=$(grep -cE '^0x[0-9a-fA-F]{8}  ' "$EXTRA_SYMS" || true)
+    grep -E '^0x[0-9a-fA-F]{8}  ' "$EXTRA_SYMS" >> "$SYMVA" || true
+    log "extra symbols: $n appended from $EXTRA_SYMS"
+    [ "$n" -gt 0 ] || log "WARNING: $EXTRA_SYMS has no '0xVVVVVVVV  name' lines"
 fi
 
 # --- 3. one Ghidra program per bitness present ---
@@ -132,7 +156,11 @@ for bits in 32 16; do
     if [ -n "$SYMVA" ]; then
         SCRIPT_ARGS+=(-preScript ApplySymbols.java "$SYMVA")
     fi
-    SCRIPT_ARGS+=(-postScript DecompileAll.java "$DECOMPDIR")
+    [ "$DECOMPILE" = 1 ] && SCRIPT_ARGS+=(-postScript DecompileAll.java "$DECOMPDIR")
+    if [ "$XREFS" = 1 ]; then
+        rm -f "$OUT/xrefs_${bits}.tsv"
+        SCRIPT_ARGS+=(-postScript DumpXrefs.java "$OUT/xrefs_${bits}.tsv")
+    fi
 
     # Ghidra APPENDS to -log; truncate so a stale error from a previous run
     # cannot be mistaken for (or hide) this run's result.
@@ -164,7 +192,14 @@ for bits in 32 16; do
     n_c=$(ls "$DECOMPDIR" 2>/dev/null | wc -l)
     ok=$(grep -oE 'ok=[0-9]+' "$OUT/headless_${bits}.log" | tail -1 || echo "ok=?")
     fail=$(grep -oE 'fail=[0-9]+' "$OUT/headless_${bits}.log" | tail -1 || echo "fail=?")
-    log "$bits-bit result: $n_c files written, $ok $fail"
+    [ "$DECOMPILE" = 1 ] && log "$bits-bit result: $n_c files written, $ok $fail"
+    if [ "$XREFS" = 1 ]; then
+        if [ -s "$OUT/xrefs_${bits}.tsv" ]; then
+            log "$bits-bit xrefs: $(grep -c '^F' "$OUT/xrefs_${bits}.tsv") functions, $(grep -c '^C' "$OUT/xrefs_${bits}.tsv") call edges, $(grep -c '^D' "$OUT/xrefs_${bits}.tsv") data refs -> $OUT/xrefs_${bits}.tsv"
+        else
+            log "ERROR: $bits-bit xrefs not written - see $OUT/headless_${bits}.log"
+        fi
+    fi
 done
 
 log "done. summary: $LOG"
