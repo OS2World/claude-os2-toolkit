@@ -196,6 +196,10 @@ for bits in 32 16; do
     if [ "$XREFS" = 1 ]; then
         if [ -s "$OUT/xrefs_${bits}.tsv" ]; then
             log "$bits-bit xrefs: $(grep -c '^F' "$OUT/xrefs_${bits}.tsv") functions, $(grep -c '^C' "$OUT/xrefs_${bits}.tsv") call edges, $(grep -c '^D' "$OUT/xrefs_${bits}.tsv") data refs -> $OUT/xrefs_${bits}.tsv"
+        elif [ -e "$OUT/xrefs_${bits}.tsv" ]; then
+            # written but empty: analysis found no function to start from in
+            # this bitness (typical of a small 16-bit object run without a .SYM)
+            log "$bits-bit xrefs: empty - Ghidra found no $bits-bit functions to report"
         else
             log "ERROR: $bits-bit xrefs not written - see $OUT/headless_${bits}.log"
         fi

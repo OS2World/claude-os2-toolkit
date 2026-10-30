@@ -370,8 +370,8 @@ used to produce these results; they are not shipped with this kit.
 * No archive surveyed had a non-zero header flags word, an attribute other than `0x20`,
   or a raw (signature-less) block. Those paths are implemented from the code, not
   exercised by data.
-* The oracle validates the codec, not `UNPACK2`'s file-system behaviour (section CLI in
-  `INDEX.md`).
+* The oracle validates the codec, not `UNPACK2`'s file-system behaviour (its command line,
+  paths and attributes), which is not documented here.
 
 ## 10. Build stability
 

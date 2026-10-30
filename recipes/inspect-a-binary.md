@@ -35,8 +35,8 @@ ne_ghidra_run.sh <name> MODULE.DLL [MODULE.sym]   # NE: 16-bit DLLs, drivers, IF
 lx_ghidra_run.sh --xrefs --no-decompile <name> MODULE.dll [MODULE.sym]   # call graph + data refs as TSV
 
 # install media and message files
-os2-unpack  extract FILE_ -d DIR           # IBM PACK files (names ending in _) - tools/unpack/README.md
-os2-unpack2 extract ARCHIVE -d DIR         # PACK2 archives (needs UNPACK2.EXE's tables)
+os2-unpack  extract FILE_ -d DIR           # IBM packed files (names ending in _) - tools/unpack/README.md
+os2-unpack2 extract FILE_ -d DIR           # ...the PACK2 kind, which os2-unpack names (needs UNPACK2.EXE)
 msgdump.py OSO001.MSG                      # every message in an MKMSGF .MSG file, by number
 ```
 
