@@ -57,8 +57,10 @@ installed copy - updates overwrite it.
   could not search - the defences against an encoding, case or wrong-volume miss reading as "IBM
   never documented this". `corpus/` holds the scripts that fetch and convert material; `ingest`
   uses them.
-- **`recipes/`** - how-tos for install/build/test/debug. **`sources.md`** - where to download the
-  IBM material and toolchain this kit does not ship.
+- **`recipes/`** - how-tos for install/build/test/debug. Building a component that must behave the
+  way OS/2 does? `recipes/conformance-testing.md` is the method: measure each API family on real
+  OS/2, bake the values into a self-checking program, then build to it. **`sources.md`** - where to
+  download the IBM material and toolchain this kit does not ship.
 - **`CONTRIBUTING.md`** - read this **before you write anything back into the kit**. The user may
   well ask you to ("update the toolkit with what I just found and cite the sources"): it is a
   reference *and* a finding aid that grows from real work. The rules that matter: contribute facts

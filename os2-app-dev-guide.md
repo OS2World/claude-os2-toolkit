@@ -124,6 +124,11 @@ Win32->PM mapping table, the six *silent* differences that compile cleanly and f
 (`WM_INITDLG`'s inverted return, the bottom-left origin, colour-index mode, ...), and the
 verification steps that actually catch them.
 
+**Building a component that must behave the way OS/2 does?** Read `recipes/conformance-testing.md`
+- take the module's shape and ordinals from the shipped binary, then work one API family at a time:
+a matrix of every outcome, each one provoked on real OS/2, the values baked into a self-checking
+program, and your version built until that same program passes on it.
+
 For the deeper craft of *writing* the C - asserting every ABI struct's size (`_Static_assert`),
 treating packed/shared structs as wire formats, tracking whose memory a pointer belongs to, and
 commenting load-bearing weirdness - see **`c-guide.md`**.
