@@ -1,6 +1,6 @@
 {
   "name": "os2-toolkit",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Build OS/2 software correctly: a verified, source-tagged OS/2 reference, tools to inspect LX/NE binaries, read IBM INF books and drive the OS/2 kernel debugger, and the disciplines that keep Claude from guessing OS/2 facts.",
   "author": {
     "name": "phaelonimaire"
