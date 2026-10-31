@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/know-first.sh",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/know-first.sh\"",
             "timeout": 5,
             "statusMessage": "Knowledge cache before the books"
           }
